@@ -90,6 +90,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "MoneyPrinterTurbo",
+      "artifactName": "${productName}.Setup.${version}.${ext}",
       "include": "build/installer.nsh"
     },
     "mac": {

@@ -29,15 +29,15 @@ jobs:
           - os: windows-latest
             build-script: build:win
             artifact-name: MoneyPrinterTurbo-Setup.exe
-            artifact-pattern: desktop/dist/*.exe
+            artifact-pattern: desktop/dist/*
           - os: macos-latest
             build-script: build:mac
             artifact-name: MoneyPrinterTurbo.dmg
-            artifact-pattern: desktop/dist/*.dmg
+            artifact-pattern: desktop/dist/*
           - os: ubuntu-latest
             build-script: build:linux
             artifact-name: MoneyPrinterTurbo.AppImage
-            artifact-pattern: desktop/dist/*.AppImage
+            artifact-pattern: desktop/dist/*
 
     steps:
       - name: Checkout
@@ -103,14 +103,92 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Rename artifacts for release
+      - name: List artifacts
         run: |
           cd artifacts
+          echo "=== Release artifacts ==="
           for f in *; do
-            # Strip the electron-builder hash suffix for cleaner release names
-            # e.g. "MoneyPrinterTurbo Setup 1.3.3.exe" stays as-is
-            echo "Artifact: $f ($(du -h "$f" | cut -f1))"
+            echo "  $f ($(du -h "$f" | cut -f1))"
           done
+
+      - name: Generate update metadata (latest.yml)
+        shell: bash
+        run: |
+          VERSION_NUM="${GITHUB_REF_NAME#v}"
+          RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+          cd artifacts
+
+          # ── Windows NSIS: latest.yml ──
+          WIN_EXE=$(ls *.exe 2>/dev/null | head -1)
+          if [ -n "$WIN_EXE" ]; then
+            WIN_SHA=$(openssl dgst -sha512 -binary "$WIN_EXE" | base64 -w0)
+            WIN_SIZE=$(stat -c%s "$WIN_EXE")
+            cat > latest.yml << YEOF
+          version: ${VERSION_NUM}
+          files:
+            - url: ${WIN_EXE}
+              sha512: ${WIN_SHA}
+              size: ${WIN_SIZE}
+          path: ${WIN_EXE}
+          sha512: ${WIN_SHA}
+          releaseDate: '${RELEASE_DATE}'
+          YEOF
+            echo "✓ latest.yml  (${WIN_EXE})"
+          else
+            echo "⚠ No .exe found, skipping latest.yml"
+          fi
+
+          # ── macOS DMG: latest-mac.yml ──
+          DMG_FILES=$(ls *.dmg 2>/dev/null)
+          if [ -n "$DMG_FILES" ]; then
+            FIRST_DMG=""
+            FIRST_SHA=""
+            {
+              echo "version: ${VERSION_NUM}"
+              echo "files:"
+              for f in $DMG_FILES; do
+                S=$(openssl dgst -sha512 -binary "$f" | base64 -w0)
+                Z=$(stat -c%s "$f")
+                echo "  - url: ${f}"
+                echo "    sha512: ${S}"
+                echo "    size: ${Z}"
+                if [ -z "$FIRST_SHA" ]; then
+                  FIRST_DMG="$f"
+                  FIRST_SHA="$S"
+                fi
+              done
+              echo "path: ${FIRST_DMG}"
+              echo "sha512: ${FIRST_SHA}"
+              echo "releaseDate: '${RELEASE_DATE}'"
+            } > latest-mac.yml
+            echo "✓ latest-mac.yml  (${DMG_FILES})"
+          else
+            echo "⚠ No .dmg found, skipping latest-mac.yml"
+          fi
+
+          # ── Linux AppImage: latest-linux.yml ──
+          APPIMAGE=$(ls *.AppImage 2>/dev/null | head -1)
+          if [ -n "$APPIMAGE" ]; then
+            APPSHA=$(openssl dgst -sha512 -binary "$APPIMAGE" | base64 -w0)
+            APPSIZE=$(stat -c%s "$APPIMAGE")
+            cat > latest-linux.yml << YEOF
+          version: ${VERSION_NUM}
+          files:
+            - url: ${APPIMAGE}
+              sha512: ${APPSHA}
+              size: ${APPSIZE}
+          path: ${APPIMAGE}
+          sha512: ${APPSHA}
+          releaseDate: '${RELEASE_DATE}'
+          YEOF
+            echo "✓ latest-linux.yml  (${APPIMAGE})"
+          else
+            echo "⚠ No .AppImage found, skipping latest-linux.yml"
+          fi
+
+          echo ""
+          echo "=== Final artifacts ==="
+          ls -la
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

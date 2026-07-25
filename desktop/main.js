@@ -75,6 +75,24 @@ function appResourcesPath() {
   return IS_PACKAGED ? process.resourcesPath : projectRoot();
 }
 
+/** Config file lives in userData (writable), not in the app install dir. */
+function configFilePath() {
+  const p = path.join(app.getPath("userData"), "config.toml");
+  // On first launch, copy from bundled example if config doesn't exist
+  if (!fs.existsSync(p)) {
+    const example = path.join(appResourcesPath(), "config.example.toml");
+    if (fs.existsSync(example)) {
+      try { fs.copyFileSync(example, p); } catch {}
+    }
+  }
+  return p;
+}
+
+/** scripts/ directory — unpacked from asar in production, plain dir in dev. */
+function scriptsPath() {
+  return path.join(__dirname, "scripts");
+}
+
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
@@ -201,6 +219,7 @@ function buildStreamlitEnv() {
     ...process.env,
     PYTHONPATH: resources,
     MPT_ROOT_DIR: resources,
+    MPT_CONFIG_FILE: configFilePath(),
     MPT_WEBUI_HOST: "127.0.0.1",
     MPT_WEBUI_PORT: String(streamlitPort),
     PYTHONUNBUFFERED: "1",
@@ -728,32 +747,36 @@ function registerIpcHandlers() {
     const python = findPython();
     if (!python) throw new Error("Python not found");
 
-    const scriptPath = path.join(__dirname, "scripts", "set_config.py");
-    const configPath = path.join(appResourcesPath(), "config.toml");
+    const script = path.join(scriptsPath(), "set_config.py");
+    const config = configFilePath();
 
     // Write the API key to config first
     const setArgs = [
-      scriptPath, "--config", configPath, "set",
+      script, "--config", config, "set",
       "__section__.app",
       `llm_provider=${provider}\n${provider}_api_key=${apiKey}`
     ];
     const cmd = python === "uv" ? "uv" : python;
     const prefix = python === "uv" ? ["run", "python"] : [];
     try {
-      execSync([cmd, ...prefix, ...setArgs].join(" "), { timeout: 10000, stdio: "ignore" });
+      execSync([cmd, ...prefix, ...setArgs].join(" "), { timeout: 15000, stdio: "ignore" });
     } catch (e) {
-      throw new Error("Failed to write config: " + e.message);
+      throw new Error("Failed to write config: " + (e.stderr || e.message).toString().substring(0, 200));
     }
 
-    // Test the connection
+    // Test the connection — need PYTHONPATH so app modules can be imported
     try {
-      const testArgs = [scriptPath, "--config", configPath, "test-llm", "--provider", provider];
-      const result = execSync([cmd, ...prefix, ...testArgs].join(" "), { timeout: 30000, encoding: "utf8" });
+      const testArgs = [script, "--config", config, "test-llm", "--provider", provider];
+      const result = execSync([cmd, ...prefix, ...testArgs].join(" "), {
+        timeout: 30000,
+        encoding: "utf8",
+        env: { ...process.env, PYTHONPATH: appResourcesPath() },
+      });
       const match = result.match(/ok (\d+\.\d+)s/);
       if (match) return { elapsed: parseFloat(match[1]) };
       throw new Error(result.trim());
     } catch (e) {
-      throw new Error(e.stderr || e.stdout || e.message);
+      throw new Error((e.stderr || e.stdout || e.message || "").toString().substring(0, 300));
     }
   });
 
@@ -761,10 +784,10 @@ function registerIpcHandlers() {
     if (apiKey && provider) {
       const python = findPython();
       if (python) {
-        const scriptPath = path.join(__dirname, "scripts", "set_config.py");
-        const configPath = path.join(appResourcesPath(), "config.toml");
+        const script = path.join(scriptsPath(), "set_config.py");
+        const config = configFilePath();
         const setArgs = [
-          scriptPath, "--config", configPath, "set",
+          script, "--config", config, "set",
           "__section__.app",
           `llm_provider=${provider}\n${provider}_api_key=${apiKey}`
         ];

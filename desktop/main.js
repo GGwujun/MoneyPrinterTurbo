@@ -698,10 +698,15 @@ function registerIpcHandlers() {
       const python = findPython();
       const cmd = python === "uv" ? "uv" : python;
       const args = python === "uv"
-        ? ["run", "python", "-c", "import streamlit,toml,loguru"]
-        : ["-c", "import streamlit,toml,loguru"];
-      execSync(`${cmd} ${args.join(" ")}`, { timeout: 15000 });
-      return { ok: true };
+        ? ["run", "python", "-c", "import streamlit, toml, loguru"]
+        : ["-c", "import streamlit, toml, loguru"];
+      // spawnSync avoids shell quoting issues with -c argument
+      const result = require("node:child_process").spawnSync(cmd, args, {
+        timeout: 15000,
+        shell: false,
+        windowsHide: true,
+      });
+      return { ok: result.status === 0 };
     } catch {
       return { ok: false };
     }

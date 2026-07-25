@@ -1,0 +1,139 @@
+{
+  "name": "moneyprinterturbo-desktop",
+  "version": "1.3.3",
+  "description": "MoneyPrinterTurbo Desktop - AI-powered short video generator",
+  "author": "MoneyPrinterTurbo",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder build --win",
+    "build:mac": "electron-builder build --mac",
+    "build:linux": "electron-builder build --linux",
+    "build:all": "electron-builder build --win --mac --linux"
+  },
+  "build": {
+    "appId": "com.moneyprinterturbo.desktop",
+    "productName": "MoneyPrinterTurbo",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../app",
+        "to": "app"
+      },
+      {
+        "from": "../webui",
+        "to": "webui"
+      },
+      {
+        "from": "../resource",
+        "to": "resource"
+      },
+      {
+        "from": "../config.example.toml",
+        "to": "config.example.toml"
+      },
+      {
+        "from": "../pyproject.toml",
+        "to": "pyproject.toml"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "requirements.txt"
+      },
+      {
+        "from": "../uv.lock",
+        "to": "uv.lock"
+      },
+      {
+        "from": "../main.py",
+        "to": "main.py"
+      },
+      {
+        "from": "../cli.py",
+        "to": "cli.py"
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "harry0703",
+      "repo": "MoneyPrinterTurbo"
+    },
+    "win": {
+      "icon": null,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerSidebar": null,
+      "uninstallDisplayName": "MoneyPrinterTurbo",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MoneyPrinterTurbo",
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "icon": null,
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "MoneyPrinterTurbo ${version}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Video",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9"
+  }
+}

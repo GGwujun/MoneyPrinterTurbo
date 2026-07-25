@@ -1,0 +1,136 @@
+name: Desktop Release
+
+# Builds the Electron desktop app and publishes a GitHub Release.
+# Triggered by pushing a version tag like v1.3.4.
+# The electron-updater on clients auto-detects new GitHub Releases.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.3.4)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build-script: build:win
+            artifact-name: MoneyPrinterTurbo-Setup.exe
+            artifact-pattern: desktop/dist/*.exe
+          - os: macos-latest
+            build-script: build:mac
+            artifact-name: MoneyPrinterTurbo.dmg
+            artifact-pattern: desktop/dist/*.dmg
+          - os: ubuntu-latest
+            build-script: build:linux
+            artifact-name: MoneyPrinterTurbo.AppImage
+            artifact-pattern: desktop/dist/*.AppImage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock') }}
+
+      - name: Install Python dependencies
+        run: uv sync --frozen
+
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Install npm dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build Electron app
+        working-directory: desktop
+        run: npm run ${{ matrix.build-script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-build
+          path: ${{ matrix.artifact-pattern }}
+          if-no-files-found: warn
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MoneyPrinterTurbo Desktop ${{ github.ref_name }}
+          body: |
+            ## MoneyPrinterTurbo Desktop ${{ github.ref_name }}
+
+            ### 🖥️ Desktop App Downloads
+
+            | Platform | Download |
+            |---|---|
+            | 🪟 Windows | `MoneyPrinterTurbo-Setup.exe` |
+            | 🍎 macOS | `MoneyPrinterTurbo.dmg` |
+            | 🐧 Linux | `MoneyPrinterTurbo.AppImage` |
+
+            ### 📦 Requirements
+            - **Python 3.11+** and **FFmpeg** must be installed
+            - Or use `uv` for automatic dependency management
+
+            ### 🔄 Auto-Update
+            The desktop app will automatically detect and offer to install this update on next launch.
+
+            See the [full changelog](https://github.com/harry0703/MoneyPrinterTurbo/commits/main) for details.
+          files: artifacts/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

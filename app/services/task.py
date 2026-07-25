@@ -268,12 +268,38 @@ def generate_script(task_id, params):
     logger.info("\n\n## generating video script")
     video_script = params.video_script.strip()
     if not video_script:
+        custom_system_prompt = params.custom_system_prompt
+        video_script_prompt = params.video_script_prompt
+
+        # 博主风格注入 (D5): 若设置了 blogger_style_id, 加载蒸馏出的创作公式,
+        # 用它整体替换默认 system prompt (除非用户已自定义), 并把风格提示追加到
+        # video_script_prompt 做强化。用户自定义始终优先。
+        style_id = (getattr(params, "blogger_style_id", "") or "").strip()
+        if style_id:
+            from app.services.blogger import profiles as blogger_profiles
+            from app.services.blogger import style_injection as blogger_style_injection
+
+            style = blogger_profiles.get_style(style_id)
+            if style:
+                if not (custom_system_prompt or "").strip():
+                    custom_system_prompt = blogger_style_injection.build_system_prompt(style)
+                hint = blogger_style_injection.build_script_hint(style)
+                if hint:
+                    video_script_prompt = ((video_script_prompt or "") + "\n\n" + hint).strip()
+                style_meta = style.get("meta") or {}
+                logger.info(
+                    f"applying blogger style: {style_meta.get('nickname', style_id)} "
+                    f"({style_meta.get('platform')})"
+                )
+            else:
+                logger.warning(f"blogger style profile not found: {style_id}, ignoring")
+
         video_script = llm.generate_script(
             video_subject=params.video_subject,
             language=params.video_language,
             paragraph_number=params.paragraph_number,
-            video_script_prompt=params.video_script_prompt,
-            custom_system_prompt=params.custom_system_prompt,
+            video_script_prompt=video_script_prompt,
+            custom_system_prompt=custom_system_prompt,
         )
     else:
         logger.debug(f"video script: \n{video_script}")

@@ -330,6 +330,20 @@ model_id = "chatterbox"
 voices = ["default-Female"]
 
 # =============================================================================
+# Blogger Distiller (博主蒸馏) — TikHub API
+# 集成自 blogger-distiller skill。用于爬取小红书/抖音博主笔记并蒸馏创作公式。
+# Token 需在 https://user.tikhub.io 注册充值, 并在控制台 → API 权限里勾选全部
+# xiaohongshu / douyin 相关端点。
+# =============================================================================
+
+[tikhub]
+tikhub_api_key = ""
+tikhub_base_url = "https://api.tikhub.io"
+tikhub_timeout = 60
+# 默认采集平台: "xhs" (小红书) 或 "douyin" (抖音)
+tikhub_default_platform = "xhs"
+
+# =============================================================================
 # WebUI Preferences / WebUI 偏好
 # =============================================================================
 

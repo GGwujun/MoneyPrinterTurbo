@@ -10,8 +10,11 @@ from loguru import logger
 
 from app import __version__
 
-root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-config_file = f"{root_dir}/config.toml"
+root_dir = os.environ.get(
+    "MPT_ROOT_DIR",
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+)
+config_file = os.environ.get("MPT_CONFIG_FILE", f"{root_dir}/config.toml")
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "kubepods", "libpod", "podman")
 _DOCKER_HOST_GATEWAY_NAME = "host.docker.internal"
 _config_save_lock = threading.RLock()
@@ -258,6 +261,7 @@ def save_config():
         config_to_save["siliconflow"] = dict(siliconflow)
         config_to_save["elevenlabs"] = dict(elevenlabs)
         config_to_save["chatterbox"] = dict(chatterbox)
+        config_to_save["tikhub"] = dict(tikhub)
         config_to_save["ui"] = dict(ui)
         serialized_config = toml.dumps(config_to_save)
 
@@ -299,6 +303,19 @@ azure = _SynchronizedConfig(_cfg.get("azure", {}))
 siliconflow = _SynchronizedConfig(_cfg.get("siliconflow", {}))
 elevenlabs = _SynchronizedConfig(_cfg.get("elevenlabs", {}))
 chatterbox = _SynchronizedConfig(_cfg.get("chatterbox", {}))
+# tikhub: blogger-distiller 爬虫的 TikHub API 凭据与参数。与其它同步段一致,
+# 必须同时出现在下面的 save_config() 里, 否则 WebUI 改动不会落盘。
+tikhub = _SynchronizedConfig(
+    _cfg.get(
+        "tikhub",
+        {
+            "tikhub_api_key": "",
+            "tikhub_base_url": "https://api.tikhub.io",
+            "tikhub_timeout": 60,
+            "tikhub_default_platform": "xhs",
+        },
+    )
+)
 ui = _SynchronizedConfig(
     _cfg.get(
         "ui",

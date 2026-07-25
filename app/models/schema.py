@@ -117,6 +117,9 @@ class VideoParams(BaseModel):
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
+    # 博主风格档案 ID。设置后, 脚本生成阶段会加载该博主的蒸馏创作公式,
+    # 作为 system prompt 注入, 让生成的视频脚本复刻该博主的内容风格。
+    blogger_style_id: Optional[str] = ""
 
 
 class SubtitleRequest(BaseModel):
@@ -228,6 +231,32 @@ class VideoTermsRequest(VideoTermsParams, BaseModel):
 
 class VideoSocialMetadataRequest(VideoSocialMetadataParams, BaseModel):
     pass
+
+
+class BloggerDistillParams(BaseModel):
+    nickname: str = Field(..., min_length=1, max_length=64)
+    platform: str = Field(default="xhs", max_length=16)  # xhs | douyin
+    max_notes: int = Field(default=30, ge=1, le=100)
+    transcript: bool = False
+
+
+class BloggerDistillRequest(BloggerDistillParams, BaseModel):
+    pass
+
+
+class BloggerTopicsRequest(BaseModel):
+    profile_id: str
+    count: int = Field(default=15, ge=1, le=30)
+    focus: str = Field(default="", max_length=200)
+
+
+class BloggerBatchRequest(BaseModel):
+    profile_id: str
+    # 每项可以是字符串 (选题标题) 或 {reference_title/direction/...} dict
+    topics: List[Any] = []
+    # 生成参数模板, 每个选题克隆一份并覆盖 video_subject + blogger_style_id
+    params: VideoParams
+    stop_at: str = "video"
 
 
 ######################################################################################################

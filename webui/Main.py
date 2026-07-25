@@ -21,7 +21,12 @@ from streamlit_tour import Tour
 
 # WebUI 作为独立入口运行时，需要让项目根目录优先于第三方依赖，
 # 避免依赖中的同名 app 包遮蔽 MoneyPrinterTurbo 自己的 app 包。
-root_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+# MPT_ROOT_DIR 允许 Electron 等包装器将运行时根目录重定向到
+# 用户数据目录（生产构建中资源目录可能只读）。
+root_dir = os.environ.get(
+    "MPT_ROOT_DIR",
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+)
 if root_dir in sys.path:
     sys.path.remove(root_dir)
 sys.path.insert(0, root_dir)
@@ -42,6 +47,7 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import bgm as bgm_service
+from app.services import blogger as blogger_service
 from app.services import cache_manager, llm, video, voice, webui_task
 from app.services import elevenlabs_music as elevenlabs_music_service
 from app.services import sonilo as sonilo_service
@@ -1039,6 +1045,123 @@ def _dismiss_settings_dialog():
     st.session_state["settings_dialog_open"] = False
 
 
+def _dismiss_blogger_dialog():
+    """关闭博主蒸馏弹窗，避免下次 rerun 重复打开。"""
+    st.session_state["blogger_dialog_open"] = False
+
+
+@st.dialog(
+    tr("博主蒸馏"),
+    width="medium",
+    on_dismiss=_dismiss_blogger_dialog,
+)
+def _render_blogger_distill_dialog():
+    """采集一个博主的真实笔记 → 蒸馏成可复用的创作公式 → 存入博主库。
+
+    采集用 TikHub API (config.tikhub.tikhub_api_key); 蒸馏走结构化 LLM 调用
+    (复用当前 LLM Provider)。整个过程同步阻塞 (约数分钟), 用 st.status 展示进度。
+    """
+    st.caption(
+        tr("输入博主昵称，自动采集 TA 的笔记并蒸馏出创作公式；之后生成视频时可套用该风格。")
+    )
+
+    tikhub_key = str(config.tikhub.get("tikhub_api_key", "") or "").strip()
+    if not tikhub_key:
+        st.warning(
+            tr("尚未配置 TikHub API Token，请在「设置 → 素材接口」里填写后再蒸馏。")
+        )
+        if st.button(tr("关闭"), key="close_blogger_no_token", use_container_width=True):
+            st.session_state["blogger_dialog_open"] = False
+            st.rerun(scope="app")
+        return
+
+    nickname = st.text_input(
+        tr("博主昵称 / 关键词"),
+        key="blogger_distill_nickname",
+        placeholder=tr("例如：影视飓风"),
+    ).strip()
+    platform = st.selectbox(
+        tr("平台"),
+        options=["xhs", "douyin"],
+        format_func=lambda p: {"xhs": tr("小红书"), "douyin": tr("抖音")}[p],
+        key="blogger_distill_platform",
+    )
+    max_notes = st.select_slider(
+        tr("采集条数"),
+        options=[30, 50, 80],
+        value=30,
+        key="blogger_distill_max_notes",
+    )
+    transcript = st.checkbox(
+        tr("提取视频口播（Whisper，需另装，更准但更慢）"),
+        value=False,
+        key="blogger_distill_transcript",
+        help=tr("开启后额外提取视频里说了什么，正文公式/情感节奏蒸馏更准；需 pip install openai-whisper + ffmpeg。未安装会自动跳过。"),
+    )
+
+    if st.button(
+        tr("开始蒸馏"),
+        type="primary",
+        key="start_blogger_distill",
+        use_container_width=True,
+        disabled=not nickname,
+    ):
+        try:
+            with st.status(tr("蒸馏中…"), expanded=True) as status:
+                st.write(tr("① 采集博主笔记（TikHub）…"))
+                profile = blogger_service.run_distillation(
+                    nickname=nickname,
+                    platform=platform,
+                    max_notes=max_notes,
+                    transcript=transcript,
+                )
+                status.update(label=tr("蒸馏完成"), state="complete")
+            style = profile.get("style") or {}
+            meta = style.get("meta") or {}
+            st.success(
+                tr(f"已保存博主「{meta.get('nickname', nickname)}」的创作公式")
+            )
+            tf_count = len((style.get("content") or {}).get("title_formulas") or [])
+            belief_count = len((style.get("cognition") or {}).get("core_beliefs") or [])
+            st.caption(
+                tr(
+                    f"样本 {meta.get('sample_count')} 条 | 核心信念 {belief_count} 条 | "
+                    f"标题公式 {tf_count} 个。可在「视频脚本」面板的「博主风格」下拉里选用。"
+                )
+            )
+        except Exception as e:
+            logger.exception("blogger distillation failed")
+            st.error(tr(f"蒸馏失败：{e}"))
+
+    # 已蒸馏档案列表 + 删除
+    st.divider()
+    st.subheader(tr("已蒸馏的博主"))
+    profiles = blogger_service.profiles.list_profiles()
+    if not profiles:
+        st.caption(tr("还没有蒸馏过的博主。"))
+        return
+    for p in profiles:
+        with st.container(border=True):
+            cols = st.columns([4, 1])
+            platform_label = {"xhs": tr("小红书"), "douyin": tr("抖音")}.get(
+                p.get("platform"), p.get("platform")
+            )
+            cols[0].write(
+                f"**{p.get('nickname')}** · {platform_label} · "
+                f"{tr('样本')} {p.get('sample_count')} · "
+                f"{tr('标题公式')} {p.get('title_formula_count')}"
+            )
+            if p.get("title_formula_preview"):
+                cols[0].caption(p["title_formula_preview"])
+            if cols[1].button(
+                tr("删除"),
+                key=f"delete_blogger_{p.get('id')}",
+                use_container_width=True,
+            ):
+                blogger_service.profiles.delete_profile(p.get("id"))
+                st.rerun(scope="app")
+
+
 def _render_brand(available_update: str | None = None):
     """渲染项目名称、当前版本和可选的更新入口。"""
     update_link = ""
@@ -1122,6 +1245,15 @@ def _render_top_bar():
                 width="content",
             ):
                 st.session_state["settings_dialog_open"] = True
+
+            if st.button(
+                tr("博主蒸馏"),
+                key="open_blogger_dialog_button",
+                type="secondary",
+                icon=":material/auto_awesome:",
+                width="content",
+            ):
+                st.session_state["blogger_dialog_open"] = True
 
             language_codes = list(locales.keys())
             selected_index = 0
@@ -2046,6 +2178,33 @@ def _render_settings_dialog():
             )
             _save_material_api_keys("coverr_api_keys", coverr_api_key)
 
+            # 博主蒸馏 (Blogger Distillation) — TikHub 配置
+            st.divider()
+            st.caption(
+                tr("博主蒸馏 — TikHub API（采集小红书/抖音博主笔记，蒸馏创作公式）")
+            )
+            tikhub_api_key = config.tikhub.get("tikhub_api_key", "")
+            tikhub_api_key = st.text_input(
+                tr("TikHub API Token"),
+                value=tikhub_api_key,
+                type="password",
+                key="tikhub_api_key_input",
+                help=tr(
+                    "注册地址 https://user.tikhub.io；充值后在控制台 → API 权限里勾选全部 xiaohongshu / douyin 端点。"
+                ),
+            )
+            config.tikhub["tikhub_api_key"] = tikhub_api_key.strip()
+            tikhub_default_platform = st.selectbox(
+                tr("默认采集平台"),
+                options=["xhs", "douyin"],
+                index=0
+                if config.tikhub.get("tikhub_default_platform", "xhs") == "xhs"
+                else 1,
+                format_func=lambda p: {"xhs": tr("小红书"), "douyin": tr("抖音")}[p],
+                key="tikhub_default_platform_select",
+            )
+            config.tikhub["tikhub_default_platform"] = tikhub_default_platform
+
     config.save_config()
 
 
@@ -2093,6 +2252,44 @@ def _render_script_settings(panel, params):
                         max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
                         key="paragraph_number_input",
                     )
+                    # 博主风格: 选用已蒸馏的创作公式, 注入到脚本生成阶段
+                    blogger_profiles = blogger_service.profiles.list_profiles()
+                    if blogger_profiles:
+                        _platform_label = {"xhs": tr("小红书"), "douyin": tr("抖音")}
+                        blogger_labels = {
+                            p["id"]: f"{p.get('nickname')} · {_platform_label.get(p.get('platform'), p.get('platform'))}"
+                            for p in blogger_profiles
+                        }
+
+                        def _blogger_style_label(value):
+                            if not value:
+                                return tr("不套用博主风格")
+                            return blogger_labels.get(value, value)
+
+                        blogger_options = [""] + [p["id"] for p in blogger_profiles]
+                        selected_style = st.selectbox(
+                            tr("博主风格"),
+                            options=blogger_options,
+                            format_func=_blogger_style_label,
+                            key="blogger_style_id_select",
+                            help=tr("选用后，生成的视频脚本会复刻该博主的内容风格（先在「博主蒸馏」里蒸馏一个博主）"),
+                        )
+                        params.blogger_style_id = selected_style or ""
+                        if selected_style:
+                            sel = next(
+                                (p for p in blogger_profiles if p["id"] == selected_style),
+                                None,
+                            )
+                            if sel and sel.get("title_formula_preview"):
+                                st.caption(
+                                    tr("标题公式参考：") + sel["title_formula_preview"]
+                                )
+                    else:
+                        params.blogger_style_id = ""
+                        st.caption(
+                            tr("没有可选的博主风格，点击顶栏「博主蒸馏」蒸馏一个博主。")
+                        )
+
                     params.video_script_prompt = st.text_area(
                         tr("Custom Script Requirements"),
                         height=100,
@@ -3912,6 +4109,45 @@ def _render_application():
 
     if st.session_state.get("settings_dialog_open", False):
         _render_settings_dialog()
+
+    if st.session_state.get("blogger_dialog_open", False):
+        _render_blogger_distill_dialog()
+
+    # ---- 平台导航 ----
+    # 用 segmented_control 做顶部导航。博主库/选题/发布台三个视图「渲染后早返回」,
+    # 视频生成页的既有逻辑 (3900+ 行) 完全不动, 避免高风险的大范围重排缩进。
+    _platform_nav_options = ["视频生成", "博主库", "选题策划", "发布台"]
+    platform_view = (
+        st.segmented_control(
+            tr("平台导航"),
+            _platform_nav_options,
+            selection_mode="single",
+            default="视频生成",
+            key="platform_view",
+            label_visibility="collapsed",
+        )
+        or "视频生成"
+    )
+
+    if platform_view == "博主库":
+        from blogger_pages import render_blogger_library_tab
+
+        render_blogger_library_tab(tr)
+        config.save_config()
+        return
+    if platform_view == "选题策划":
+        from blogger_pages import render_topic_planner_tab
+
+        render_topic_planner_tab(tr)
+        config.save_config()
+        return
+    if platform_view == "发布台":
+        from blogger_pages import render_publish_console_tab
+
+        render_publish_console_tab(tr)
+        config.save_config()
+        return
+    # 视频生成 (默认): 以下为原有渲染逻辑, 保持不变 ↓
 
     restore_applied = _apply_pending_task_restore()
     restore_candidate_id = st.session_state.get("task_restore_candidate_id")

@@ -1,22 +1,22 @@
 name: Desktop Release
 
 # Builds the Electron desktop app and publishes a GitHub Release.
-# Triggered by pushing a version tag like v1.3.4.
-# The electron-updater on clients auto-detects new GitHub Releases.
+# - Push a version tag (v1.3.4) → build + create GitHub Release
+# - Manual dispatch → build only (artifacts available for download)
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version tag (e.g. v1.3.4)"
-        required: false
-        default: ""
 
 permissions:
   contents: write
+  actions: read
+
+env:
+  # Suppress Node 20 deprecation warnings from older action versions
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build:
@@ -93,7 +93,8 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Only create a release on tag push — not on workflow_dispatch
+    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Download all artifacts
@@ -102,8 +103,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts
-        run: ls -la artifacts/
+      - name: Rename artifacts for release
+        run: |
+          cd artifacts
+          for f in *; do
+            # Strip the electron-builder hash suffix for cleaner release names
+            # e.g. "MoneyPrinterTurbo Setup 1.3.3.exe" stays as-is
+            echo "Artifact: $f ($(du -h "$f" | cut -f1))"
+          done
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -121,13 +128,13 @@ jobs:
             | 🐧 Linux | `MoneyPrinterTurbo.AppImage` |
 
             ### 📦 Requirements
-            - **Python 3.11+** and **FFmpeg** must be installed
-            - Or use `uv` for automatic dependency management
+            - **Python 3.11+** and **FFmpeg** required on first launch
+            - Or install **uv** for automatic dependency management
 
             ### 🔄 Auto-Update
-            The desktop app will automatically detect and offer to install this update on next launch.
+            The desktop app automatically detects and offers to install this update.
 
-            See the [full changelog](https://github.com/harry0703/MoneyPrinterTurbo/commits/main) for details.
+            See [full changelog](https://github.com/harry0703/MoneyPrinterTurbo/commits/main).
           files: artifacts/*
           draft: false
           prerelease: false

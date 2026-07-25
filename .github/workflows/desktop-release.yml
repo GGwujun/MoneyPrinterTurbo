@@ -65,7 +65,9 @@ jobs:
           key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock') }}
 
       - name: Install Python dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --link-mode=copy
+        env:
+          UV_LINK_MODE: copy
 
       - name: Install FFmpeg (Linux)
         if: runner.os == 'Linux'

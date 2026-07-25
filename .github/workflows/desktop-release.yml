@@ -77,7 +77,7 @@ jobs:
 
       - name: Build Electron app
         working-directory: desktop
-        run: npm run ${{ matrix.build-script }}
+        run: npm run ${{ matrix.build-script }} -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/

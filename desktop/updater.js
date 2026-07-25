@@ -71,7 +71,7 @@ function downloadUpdate(win) {
  * Prompt user to restart and install the update.
  *
  * @param {BrowserWindow} win  parent window for the dialog
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>}  true if user chose to install now
  */
 async function promptInstall(win) {
   const result = await dialog.showMessageBox(win || undefined, {
@@ -84,9 +84,14 @@ async function promptInstall(win) {
     cancelId: 1,
   });
 
-  if (result.response === 0) {
-    autoUpdater.quitAndInstall();
-  }
+  return result.response === 0;
+}
+
+/**
+ * Trigger the installer — caller must have already stopped Streamlit.
+ */
+function quitAndInstall() {
+  autoUpdater.quitAndInstall();
 }
 
 // ---------------------------------------------------------------------------
@@ -98,4 +103,5 @@ module.exports = {
   checkForUpdates,
   downloadUpdate,
   promptInstall,
+  quitAndInstall,
 };

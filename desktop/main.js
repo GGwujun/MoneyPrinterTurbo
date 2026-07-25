@@ -334,13 +334,30 @@ function stopStreamlit() {
   if (!streamlitProcess) return;
   logger.info("Stopping Streamlit...");
   if (IS_WIN) {
-    try { exec(`taskkill /PID ${streamlitProcess.pid} /T /F`); } catch {}
+    try {
+      execSync(`taskkill /PID ${streamlitProcess.pid} /T /F`, { timeout: 15000 });
+      // Wait for OS to release file handles before installer runs
+      execSync("ping -n 3 127.0.0.1 > NUL", { timeout: 5000 });
+    } catch {}
   } else {
     streamlitProcess.kill("SIGTERM");
     setTimeout(() => {
       if (streamlitProcess) streamlitProcess.kill("SIGKILL");
     }, 5000);
   }
+}
+
+/**
+ * Stop Streamlit and wait for cleanup, then trigger the NSIS updater.
+ * Must be called *before* quitAndInstall so the installer does not fail
+ * with "Cannot close MoneyPrinterTurbo" because of locked files.
+ */
+function performUpdateInstall() {
+  if (!updater) return;
+  stopStreamlit();
+  streamlitPort = null;
+  isQuitting = true;
+  updater.quitAndInstall();
 }
 
 // ---------------------------------------------------------------------------
@@ -834,8 +851,9 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("install-update", async () => {
-    await updater.promptInstall(mainWindow);
-    return true;
+    const ok = await updater.promptInstall(mainWindow);
+    if (ok) performUpdateInstall();
+    return ok;
   });
 }
 
@@ -931,7 +949,8 @@ function buildAppMenu() {
                 });
                 if (resp.response === 0) {
                   await updater.downloadUpdate(mainWindow);
-                  await updater.promptInstall(mainWindow);
+                  const ok = await updater.promptInstall(mainWindow);
+                  if (ok) performUpdateInstall();
                 }
               } else {
                 dialog.showMessageBox(mainWindow || undefined, {

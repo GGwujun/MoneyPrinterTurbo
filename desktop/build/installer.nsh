@@ -1,5 +1,6 @@
 ; MoneyPrinterTurbo — NSIS Installer Script
 ; Customizes the Windows installer produced by electron-builder.
+; electron-builder handles uninstaller creation automatically when oneClick: false.
 
 !macro _mptBrand
   BrandingText "MoneyPrinterTurbo"
@@ -16,25 +17,17 @@
   !define MUI_FINISHPAGE_LINK_LOCATION "https://github.com/harry0703/MoneyPrinterTurbo"
 !macroend
 
-Section "Install"
-  SetOutPath "$INSTDIR"
+; ── customInstall ────────────────────────────────────────────────────
+; Called by electron-builder during install. Add registry metadata for
+; Add/Remove Programs beyond what electron-builder writes automatically.
 
-  ; Add extra metadata to Add/Remove Programs entries.
-  ; electron-builder already creates the core uninstall registry keys,
-  ; start menu shortcuts, and desktop shortcuts. Here we supplement with
-  ; display metadata and read-only flags.
+!macro customInstall
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "DisplayName" "MoneyPrinterTurbo"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "Publisher" "MoneyPrinterTurbo"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "URLInfoAbout" "https://github.com/harry0703/MoneyPrinterTurbo"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "NoRepair" 1
-
-  ; ${ESTIMATED_SIZE} is defined by electron-builder before including this script
   !ifdef ESTIMATED_SIZE
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "EstimatedSize" ${ESTIMATED_SIZE}
   !endif
-SectionEnd
-
-Section "Uninstall"
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
-SectionEnd
+!macroend

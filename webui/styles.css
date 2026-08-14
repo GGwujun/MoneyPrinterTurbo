@@ -1,3 +1,35 @@
+/* --------------------------------------------------------------------------
+   设计令牌（Design Tokens）
+   集中定义品牌色板、圆角、间距等视觉变量。亮色 / 暗色分别取值，既保持与
+   Streamlit 主题的协调，又让项目自身拥有一套稳定的视觉基线。后续新增样式
+   应优先引用这里的 var(--mpt-*)，避免再散落硬编码颜色。
+   -------------------------------------------------------------------------- */
+:root {
+    /* 品牌强调色：沿用项目既有的红色调，作为更新提醒、焦点环和强调链接的主色。 */
+    --mpt-accent: #d94848;
+    --mpt-accent-hover: #c83a3a;
+    --mpt-accent-soft: rgba(217, 72, 72, 0.48);
+
+    /* 卡片 / 表面：基于 Streamlit 暴露的背景色叠加一层半透明描边与阴影，
+       让 border=True 容器有更清晰的层次，而不改变整体明暗基调。 */
+    --mpt-radius: 0.6rem;
+    --mpt-card-border: color-mix(in srgb, currentColor 10%, transparent);
+    --mpt-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.05);
+
+    /* 分组小标题：用于音频 / 字幕面板内的次级分组，弱化但仍可辨。 */
+    --mpt-subtitle-color: color-mix(in srgb, currentColor 70%, transparent);
+    --mpt-divider-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --mpt-accent: #ff6b6b;
+        --mpt-accent-hover: #ff8585;
+        --mpt-accent-soft: rgba(255, 107, 107, 0.5);
+        --mpt-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.35);
+    }
+}
+
 header[data-testid="stHeader"],
 div[data-testid="stToolbar"],
 div[data-testid="stDecoration"],
@@ -9,6 +41,33 @@ div[data-testid="stSkillsNudge"] {
 
 div[data-testid="stMainBlockContainer"] {
     padding-top: 0.5rem !important;
+}
+
+/* 主设置网格（文案 / 视频 / 音频 / 字幕四个并列面板）统一圆角并补一层柔和阴影，
+   让它们在视觉上构成一致的卡片体系，而非裸边框方块。作用范围限定在
+   main_settings_grid 内，避免误伤任务行、设置弹窗等其它 border 容器。 */
+div[class*="st-key-main_settings_grid"]
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: var(--mpt-radius) !important;
+    box-shadow: var(--mpt-card-shadow) !important;
+}
+
+/* 面板内次级分组小标题（音频/字幕面板用 st.write 渲染的 .mpt-subtitle）。
+   弱化字色 + 下方细分隔线，把平铺的长控件列表切成可扫读的段落。 */
+.mpt-subtitle {
+    margin: 0.2rem 0 0.5rem !important;
+    padding-bottom: 0.3rem !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--mpt-subtitle-color) !important;
+    border-bottom: 1px solid var(--mpt-divider-color) !important;
+}
+
+hr {
+    margin: 0.6rem 0 !important;
+    border-color: var(--mpt-divider-color) !important;
 }
 
 h1 {
@@ -91,7 +150,7 @@ div[class*="st-key-voice_mode_control"] [role="radiogroup"] > button p {
 }
 
 .mpt-brand__version:focus-visible {
-    outline: 2px solid rgba(255, 75, 75, 0.48);
+    outline: 2px solid var(--mpt-accent-soft);
     outline-offset: 2px;
 }
 
@@ -101,25 +160,20 @@ div[class*="st-key-voice_mode_control"] [role="radiogroup"] > button p {
     flex: 0 0 auto;
     font-size: 0.875rem;
     font-weight: 600;
-    color: #d94848 !important;
+    color: var(--mpt-accent) !important;
     text-decoration: none !important;
     white-space: nowrap;
 }
 
 .mpt-brand__update:hover {
+    color: var(--mpt-accent-hover) !important;
     text-decoration: underline !important;
     text-underline-offset: 0.18em;
 }
 
 .mpt-brand__update:focus-visible {
-    outline: 2px solid rgba(255, 75, 75, 0.48);
+    outline: 2px solid var(--mpt-accent-soft);
     outline-offset: 2px;
-}
-
-@media (prefers-color-scheme: dark) {
-    .mpt-brand__update {
-        color: #ff6b6b !important;
-    }
 }
 
 /* Streamlit 会自动给 h1 追加一个标题锚点。品牌区已有版本号项目链接，额外的
@@ -357,6 +411,24 @@ div[class*="st-key-task_row_"] button[kind="secondary"] p {
 @media (max-width: 700px) {
     div[class*="st-key-task_table_header_"] {
         display: none !important;
+    }
+
+    /* 主表单默认是 4 列，在窄屏会被 Streamlit 强制逐列堆叠成超长列表。
+       这里改用 2 列窄间距布局，让音频 / 字幕等面板能并排，减少纵向滚动。 */
+    div[class*="st-key-main_settings_grid"]
+        > div[data-testid="stLayoutWrapper"]
+        > div[data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        gap: 0.6rem !important;
+    }
+
+    div[class*="st-key-main_settings_grid"]
+        > div[data-testid="stLayoutWrapper"]
+        > div[data-testid="stHorizontalBlock"]
+        > div[data-testid="stColumn"] {
+        flex: 1 1 100% !important;
+        width: 100% !important;
+        min-width: 0 !important;
     }
 
     div[class*="st-key-task_row_"]

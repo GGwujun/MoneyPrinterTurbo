@@ -1,6 +1,7 @@
 import os
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from urllib.parse import urlencode
 
@@ -15,6 +16,82 @@ from app.utils import utils
 # Thread-safe counter for API key rotation
 _api_key_counter = 0
 _api_key_lock = threading.Lock()
+
+# 素材下载并发执行器。search 阶段对 provider 有限流，保持串行；下载阶段
+# (save_video) 是 IO 密集型且素材 CDN 一般不限流，因此用线程池并发以显著
+# 缩短素材准备耗时。worker 数量可经 config.app.material_download_workers 配置。
+# 参见 task.py 的 cross-post 线程池风格：模块级单例 + thread_name_prefix。
+_download_executor_lock = threading.Lock()
+_download_executor = None
+
+# save_video 以 URL 的 md5 作为文件名，同一 URL 会写同一文件。跨任务共享
+# material_directory 时，不同线程对同一热门素材并发下载会互相截断。这里用
+# per-path 锁兜底，保证同一文件路径的写入串行；不同路径仍可并发。
+_save_video_locks = {}
+_save_video_locks_guard = threading.Lock()
+
+
+def _get_download_executor() -> ThreadPoolExecutor:
+    """惰性创建下载线程池，worker 数量从配置读取并做范围校验。"""
+    global _download_executor
+    if _download_executor is not None:
+        return _download_executor
+    with _download_executor_lock:
+        if _download_executor is None:
+            try:
+                workers = int(config.app.get("material_download_workers", 4))
+            except (TypeError, ValueError):
+                workers = 4
+            # 并发过高会同时拉起多个 ffmpeg 校验进程并放大内存占用
+            # (save_video 把整个 mp4 读进内存)，限制在合理区间。
+            workers = max(1, min(workers, 8))
+            _download_executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="mpt-material-dl",
+            )
+        return _download_executor
+
+
+def _get_save_video_lock(video_path: str) -> threading.Lock:
+    with _save_video_locks_guard:
+        lock = _save_video_locks.get(video_path)
+        if lock is None:
+            lock = threading.Lock()
+            _save_video_locks[video_path] = lock
+        return lock
+
+
+def _download_material_worker(item, save_dir: str) -> str:
+    """单个素材下载的线程入口，带异常隔离。per-path 写入锁在 save_video 内部。"""
+    try:
+        logger.info(f"downloading video: {item.url}")
+        saved = save_video(video_url=item.url, save_dir=save_dir)
+        if saved:
+            logger.info(f"video saved: {saved}")
+        return saved
+    except Exception as e:
+        logger.error(f"failed to download video: {utils.to_json(item)} => {str(e)}")
+        return ""
+
+
+def _download_items_concurrently(items: List[MaterialInfo], save_dir: str) -> List[str]:
+    """并发下载一批候选素材，返回与传入 items 顺序一一对应的结果列表
+    （成功为路径字符串，失败为空字符串）。结果顺序由提交顺序决定，不随完成
+    先后变化——下游 sequential 拼接依赖稳定顺序。"""
+    executor = _get_download_executor()
+    futures = [
+        executor.submit(_download_material_worker, item, save_dir) for item in items
+    ]
+    return [future.result() for future in futures]
+
+
+def _download_worker_count() -> int:
+    """返回下载线程池的 worker 数，用于决定分批大小。"""
+    try:
+        return _get_download_executor()._max_workers  # noqa: SLF001
+    except Exception:
+        return 4
+
 
 
 def _get_tls_verify() -> bool:
@@ -256,51 +333,54 @@ def save_video(video_url: str, save_dir: str = "") -> str:
     video_id = f"vid-{url_hash}"
     video_path = f"{save_dir}/{video_id}.mp4"
 
-    # if video already exists, return the path
-    if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-        logger.info(f"video already exists: {video_path}")
-        return video_path
+    # 同一 URL 必然映射到同一文件路径。并发下载时，多个线程同时 open(...,"wb")
+    # 会互相截断导致文件损坏。这里用 per-path 锁串行化写入；不同路径之间仍并发。
+    with _get_save_video_lock(video_path):
+        # if video already exists, return the path
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            logger.info(f"video already exists: {video_path}")
+            return video_path
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        }
 
-    # if video does not exist, download it
-    with open(video_path, "wb") as f:
-        f.write(
-            requests.get(
-                video_url,
-                headers=headers,
-                proxies=config.proxy,
-                verify=_get_tls_verify(),
-                timeout=(60, 240),
-            ).content
-        )
+        # if video does not exist, download it
+        with open(video_path, "wb") as f:
+            f.write(
+                requests.get(
+                    video_url,
+                    headers=headers,
+                    proxies=config.proxy,
+                    verify=_get_tls_verify(),
+                    timeout=(60, 240),
+                ).content
+            )
 
-    if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-        clip = None
-        try:
-            clip = VideoFileClip(video_path)
-            duration = clip.duration
-            fps = clip.fps
-            if duration > 0 and fps > 0:
-                return video_path
-        except Exception as e:
-            logger.warning(f"invalid video file: {video_path} => {str(e)}")
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            clip = None
             try:
-                os.remove(video_path)
-            except Exception as remove_error:
-                logger.warning(
-                    f"failed to remove invalid video file: {video_path}, error: {str(remove_error)}"
-                )
-        finally:
-            if clip is not None:
+                clip = VideoFileClip(video_path)
+                duration = clip.duration
+                fps = clip.fps
+                if duration > 0 and fps > 0:
+                    return video_path
+            except Exception as e:
+                logger.warning(f"invalid video file: {video_path} => {str(e)}")
                 try:
-                    clip.close()
-                except Exception as close_error:
+                    os.remove(video_path)
+                except Exception as remove_error:
                     logger.warning(
-                        f"failed to close video clip: {video_path}, error: {str(close_error)}"
+                        f"failed to remove invalid video file: {video_path}, error: {str(remove_error)}"
                     )
+            finally:
+                if clip is not None:
+                    try:
+                        clip.close()
+                    except Exception as close_error:
+                        logger.warning(
+                            f"failed to close video clip: {video_path}, error: {str(close_error)}"
+                        )
     return ""
 
 
@@ -363,25 +443,32 @@ def download_videos(
     if concat_mode_value == VideoConcatMode.random.value:
         random.shuffle(valid_video_items)
 
+    # 按线程池 worker 数分批并发下载。每批下完后累加时长，达到音频时长预算
+    # 即停止提交后续批次，保留原"凑够即停"语义。批内并发结果按提交顺序回填，
+    # 保证 random 模式 shuffle 后的顺序即为成片顺序。最后一批可能因并发多下
+    # 若干素材——这些素材会进入本地缓存供后续复用，不算真正浪费。
+    try:
+        workers = _download_worker_count()
+    except Exception:
+        workers = 4
+    batch_size = max(1, workers)
+
     total_duration = 0.0
-    for item in valid_video_items:
-        try:
-            logger.info(f"downloading video: {item.url}")
-            saved_video_path = save_video(
-                video_url=item.url, save_dir=material_directory
-            )
+    stop = False
+    for start in range(0, len(valid_video_items), batch_size):
+        if stop:
+            break
+        batch = valid_video_items[start : start + batch_size]
+        saved_paths = _download_items_concurrently(batch, material_directory)
+        for item, saved_video_path in zip(batch, saved_paths):
             if saved_video_path:
-                logger.info(f"video saved: {saved_video_path}")
                 video_paths.append(saved_video_path)
-                seconds = min(max_clip_duration, item.duration)
-                total_duration += seconds
-                if total_duration > audio_duration:
-                    logger.info(
-                        f"total duration of downloaded videos: {total_duration} seconds, skip downloading more"
-                    )
-                    break
-        except Exception as e:
-            logger.error(f"failed to download video: {utils.to_json(item)} => {str(e)}")
+                total_duration += min(max_clip_duration, item.duration)
+        if total_duration > audio_duration:
+            logger.info(
+                f"total duration of downloaded videos: {total_duration} seconds, skip downloading more"
+            )
+            stop = True
     logger.success(f"downloaded {len(video_paths)} videos")
     return video_paths
 
@@ -436,6 +523,10 @@ def _download_videos_by_script_order(
     video_paths = []
     total_duration = 0.0
     candidate_index = 0
+    # script-order 模式对"逐个累加、达预算即停"的语义高度敏感：并发会把整轮
+    # 候选都下完才检查时长，导致多下载。该路径追求顺序准确性而非吞吐，因此
+    # 保持逐个串行下载；普通模式才走并发批量下载。per-path 锁仍生效，确保
+    # save_video 可被任一线程安全调用。
     while candidate_groups and total_duration <= audio_duration:
         has_candidate = False
         for search_term, term_items in candidate_groups:

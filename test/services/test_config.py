@@ -152,3 +152,84 @@ class TestConfigPersistence:
 
         with config.try_runtime_config_lock() as acquired:
             assert acquired is True
+
+
+class TestConfigTypeCoercion:
+    """数值配置项的加载期类型规整：手改 config.toml 写成字符串等情况下，
+    应在加载时回退默认并告警，而不是在运行时远端调用处崩溃。"""
+
+    def test_numeric_string_is_coerced(self):
+        section = {"material_download_workers": "6", "edge_tts_timeout": "30"}
+        config._coerce_config_types(
+            section,
+            {
+                "material_download_workers": (4, True),
+                "edge_tts_timeout": (30, False),
+            },
+        )
+        assert section["material_download_workers"] == 6
+        assert isinstance(section["material_download_workers"], int)
+        assert section["edge_tts_timeout"] == 30.0
+        assert isinstance(section["edge_tts_timeout"], float)
+
+    def test_invalid_value_falls_back_to_default(self):
+        section = {"material_download_workers": "not-a-number"}
+        config._coerce_config_types(
+            section, {"material_download_workers": (4, True)}
+        )
+        assert section["material_download_workers"] == 4
+
+    def test_valid_numbers_are_preserved(self):
+        section = {"edge_tts_timeout": 45.5}
+        config._coerce_config_types(
+            section, {"edge_tts_timeout": (30, False)}
+        )
+        assert section["edge_tts_timeout"] == 45.5
+
+    def test_missing_keys_are_not_added(self):
+        """规整只作用于已存在的 key，不应向配置段注入默认值。"""
+        section = {}
+        config._coerce_config_types(
+            section, {"material_download_workers": (4, True)}
+        )
+        assert section == {}
+
+    def test_bool_is_not_treated_as_numeric(self):
+        """bool 是 int 子类，但不应被当作合法数值配置。"""
+        section = {"material_download_workers": True}
+        config._coerce_config_types(
+            section, {"material_download_workers": (4, True)}
+        )
+        assert section["material_download_workers"] == 4
+
+
+class TestLLMRetryBackoff:
+    """LLM 重试的指数退避：基础值、上限、可禁用。"""
+
+    def test_backoff_grows_exponentially_and_is_capped(self):
+        from app.services import llm
+
+        with patch.dict(config.app, {"llm_retry_backoff_base": 1.0, "llm_retry_backoff_max": 8.0}):
+            assert llm._retry_backoff_seconds(0) == 1.0
+            assert llm._retry_backoff_seconds(1) == 2.0
+            assert llm._retry_backoff_seconds(2) == 4.0
+            assert llm._retry_backoff_seconds(3) == 8.0
+            # 达上限后不再增长。
+            assert llm._retry_backoff_seconds(4) == 8.0
+
+    def test_backoff_can_be_disabled(self):
+        from app.services import llm
+
+        with patch.dict(config.app, {"llm_retry_backoff_base": 0}):
+            assert llm._retry_backoff_seconds(0) == 0.0
+            assert llm._retry_backoff_seconds(3) == 0.0
+
+    def test_backoff_falls_back_on_invalid_config(self):
+        from app.services import llm
+
+        with patch.dict(config.app, {"llm_retry_backoff_base": "bad", "llm_retry_backoff_max": "x"}):
+            # 非法配置回退默认 base=1.0, max=16.0。
+            assert llm._retry_backoff_seconds(0) == 1.0
+            assert llm._retry_backoff_seconds(4) == 16.0
+
+

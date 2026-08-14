@@ -11,6 +11,7 @@ from uuid import uuid4
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from app.services import cross_post as cp
 from app.services import task as tm
 from app.models.schema import MaterialInfo, VideoParams
 from app.services.state import MemoryState, RedisState
@@ -27,12 +28,12 @@ class TestTaskService(unittest.TestCase):
     def setUp(self):
         # 发布 Future 注册表是进程级状态。测试间清理可以避免某个模拟 Future
         # 影响后续恢复测试，同时不会触碰真正线程池中的生产任务。
-        with tm._cross_post_registry_lock:
-            tm._cross_post_futures.clear()
+        with cp._cross_post_registry_lock:
+            cp._cross_post_futures.clear()
     
     def tearDown(self):
-        with tm._cross_post_registry_lock:
-            tm._cross_post_futures.clear()
+        with cp._cross_post_registry_lock:
+            cp._cross_post_futures.clear()
 
     def test_is_task_busy_covers_generation_and_cross_posting(self):
         """删除入口必须同时识别视频生成和跨平台发布的活跃状态。"""
@@ -944,7 +945,7 @@ class TestTaskService(unittest.TestCase):
             ) as cross_post,
             patch.object(tm.sm, "state", state),
             patch.object(
-                tm._cross_post_executor,
+                cp._cross_post_executor,
                 "submit",
                 side_effect=run_immediately,
             ),
@@ -1022,7 +1023,7 @@ class TestTaskService(unittest.TestCase):
             patch.object(tm.upload_post, "cross_post_video") as cross_post,
             patch.object(tm.sm, "state", state),
             patch.object(
-                tm._cross_post_executor,
+                cp._cross_post_executor,
                 "submit",
                 side_effect=capture_submission,
             ) as submit,
@@ -1074,7 +1075,7 @@ class TestTaskService(unittest.TestCase):
             ),
             patch.object(tm.upload_post, "cross_post_video") as cross_post,
         ):
-            tm._run_cross_post(
+            cp._run_cross_post(
                 "cross-post-worker-failure",
                 ("final.mp4",),
                 "Coffee",
@@ -1118,8 +1119,8 @@ class TestTaskService(unittest.TestCase):
             patch.object(service, "platforms", ["tiktok"]),
             patch.object(service, "youtube_privacy_status", "private"),
             patch.object(tm.sm, "state", state),
-            patch.object(tm._cross_post_slots, "acquire", return_value=False),
-            patch.object(tm._cross_post_executor, "submit") as submit,
+            patch.object(cp._cross_post_slots, "acquire", return_value=False),
+            patch.object(cp._cross_post_executor, "submit") as submit,
         ):
             result = tm.start("cross-post-queue-full-result", params)
 
@@ -1152,14 +1153,14 @@ class TestTaskService(unittest.TestCase):
 
         with (
             patch.object(tm.sm, "state", state),
-            patch.object(tm, "_cross_post_slots", slots),
+            patch.object(cp, "_cross_post_slots", slots),
             patch.object(
-                tm._cross_post_executor,
+                cp._cross_post_executor,
                 "submit",
                 side_effect=RuntimeError("executor is shutting down"),
             ),
         ):
-            scheduling_error = tm._schedule_cross_post(
+            scheduling_error = cp._schedule_cross_post(
                 task_id="cross-post-schedule-failure",
                 video_paths=["final.mp4"],
                 params=VideoParams(video_subject="Coffee"),
@@ -1188,15 +1189,15 @@ class TestTaskService(unittest.TestCase):
         )
 
         with (
-            patch.object(tm, "_cross_post_slots", slots),
+            patch.object(cp, "_cross_post_slots", slots),
             patch.object(tm.sm, "state", state),
             patch.object(
-                tm,
+                cp,
                 "_run_cross_post",
                 side_effect=RuntimeError("worker crashed"),
             ),
         ):
-            tm._run_cross_post_with_slot("task-id")
+            cp._run_cross_post_with_slot("task-id")
 
         slots.release.assert_called_once_with()
         task = state.get_task("task-id")
@@ -1214,7 +1215,7 @@ class TestTaskService(unittest.TestCase):
             patch.object(tm.logger, "exception") as log_exception,
             patch.object(tm.time, "sleep") as sleep,
         ):
-            tm._run_cross_post(
+            cp._run_cross_post(
                 "state-backend-failure",
                 ("final.mp4",),
                 "Coffee",
@@ -1264,7 +1265,7 @@ class TestTaskService(unittest.TestCase):
             ) as cross_post,
             patch.object(tm.time, "sleep") as sleep,
         ):
-            tm._run_cross_post(
+            cp._run_cross_post(
                 "transient-state-failure",
                 ("final.mp4",),
                 "Coffee",
@@ -1274,7 +1275,7 @@ class TestTaskService(unittest.TestCase):
                 "private",
             )
 
-        sleep.assert_called_once_with(tm._CROSS_POST_STATE_RETRY_DELAY_SECONDS)
+        sleep.assert_called_once_with(cp._CROSS_POST_STATE_RETRY_DELAY_SECONDS)
         cross_post.assert_called_once()
         task = state.get_task("transient-state-failure")
         self.assertEqual(task["cross_post_state"], tm.const.CROSS_POST_STATE_COMPLETE)
@@ -1307,7 +1308,7 @@ class TestTaskService(unittest.TestCase):
                     "another-host:123:remote"
                     if task_id == "remote-processing"
                     else (
-                        tm._cross_post_process_owner
+                        cp._cross_post_process_owner
                         if task_id == "inactive-current-owner"
                         else None
                     )
@@ -1315,14 +1316,14 @@ class TestTaskService(unittest.TestCase):
             )
 
         active_future = Future()
-        tm._register_cross_post_future("active-processing", active_future)
+        cp._register_cross_post_future("active-processing", active_future)
         with patch.object(tm.sm, "state", state):
-            recovered = tm.recover_interrupted_cross_posts(page_size=1)
+            recovered = cp.recover_interrupted_cross_posts(page_size=1)
 
         self.assertEqual(recovered, 2)
         stale_task = state.get_task("stale-pending")
         self.assertEqual(stale_task["cross_post_state"], tm.const.CROSS_POST_STATE_FAILED)
-        self.assertEqual(stale_task["cross_post_error"], tm._INTERRUPTED_CROSS_POST_ERROR)
+        self.assertEqual(stale_task["cross_post_error"], cp._INTERRUPTED_CROSS_POST_ERROR)
         self.assertEqual(
             state.get_task("active-processing")["cross_post_state"],
             tm.const.CROSS_POST_STATE_PROCESSING,
@@ -1345,30 +1346,30 @@ class TestTaskService(unittest.TestCase):
         """当前进程无活动 Future 时，同 PID 的新旧 owner 都应视为中断。"""
         stale_owner = f"{tm.socket.gethostname()}:{tm.os.getpid()}:old-instance"
 
-        self.assertFalse(tm._is_cross_post_owner_alive(stale_owner))
-        self.assertFalse(tm._is_cross_post_owner_alive(tm._cross_post_process_owner))
+        self.assertFalse(cp._is_cross_post_owner_alive(stale_owner))
+        self.assertFalse(cp._is_cross_post_owner_alive(cp._cross_post_process_owner))
 
     def test_cross_post_owner_detection_handles_process_boundaries(self):
         """所有者探测应覆盖旧记录、其它主机和本机进程异常边界。"""
         hostname = tm.socket.gethostname()
 
-        self.assertFalse(tm._is_cross_post_owner_alive(None))
-        self.assertFalse(tm._is_cross_post_owner_alive("invalid-owner"))
-        self.assertTrue(tm._is_cross_post_owner_alive("another-host:123:instance"))
+        self.assertFalse(cp._is_cross_post_owner_alive(None))
+        self.assertFalse(cp._is_cross_post_owner_alive("invalid-owner"))
+        self.assertTrue(cp._is_cross_post_owner_alive("another-host:123:instance"))
 
         with (
             patch.object(tm.os, "name", "posix"),
             patch.object(tm.os, "kill", side_effect=ProcessLookupError),
         ):
             self.assertFalse(
-                tm._is_cross_post_owner_alive(f"{hostname}:987654:dead-instance")
+                cp._is_cross_post_owner_alive(f"{hostname}:987654:dead-instance")
             )
         with (
             patch.object(tm.os, "name", "posix"),
             patch.object(tm.os, "kill", side_effect=PermissionError),
         ):
             self.assertTrue(
-                tm._is_cross_post_owner_alive(f"{hostname}:987654:restricted")
+                cp._is_cross_post_owner_alive(f"{hostname}:987654:restricted")
             )
         with (
             patch.object(tm.os, "name", "posix"),
@@ -1376,24 +1377,24 @@ class TestTaskService(unittest.TestCase):
             patch.object(tm.logger, "warning") as log_warning,
         ):
             self.assertTrue(
-                tm._is_cross_post_owner_alive(f"{hostname}:987654:unknown")
+                cp._is_cross_post_owner_alive(f"{hostname}:987654:unknown")
             )
         self.assertIn("inspection failed", log_warning.call_args.args[0])
 
         with (
             patch.object(tm.os, "name", "nt"),
-            patch.object(tm, "_is_windows_process_alive", return_value=True) as probe,
+            patch.object(cp, "_is_windows_process_alive", return_value=True) as probe,
         ):
             self.assertTrue(
-                tm._is_cross_post_owner_alive(f"{hostname}:987654:windows")
+                cp._is_cross_post_owner_alive(f"{hostname}:987654:windows")
             )
         probe.assert_called_once_with(987654)
 
     @unittest.skipUnless(os.name == "nt", "Windows process API test")
     def test_windows_process_probe_is_read_only_and_detects_liveness(self):
         """Windows CI 应真实验证只读进程探测，不允许回退到 os.kill。"""
-        self.assertTrue(tm._is_windows_process_alive(os.getpid()))
-        self.assertFalse(tm._is_windows_process_alive(2_147_483_647))
+        self.assertTrue(cp._is_windows_process_alive(os.getpid()))
+        self.assertFalse(cp._is_windows_process_alive(2_147_483_647))
 
     def test_cross_post_terminal_check_converts_active_state_to_failure(self):
         """worker 已结束但状态仍活动时，最终回调必须补写失败终态。"""
@@ -1407,7 +1408,7 @@ class TestTaskService(unittest.TestCase):
         )
 
         with patch.object(tm.sm, "state", state):
-            tm._ensure_cross_post_terminal_state("unfinished-cross-post")
+            cp._ensure_cross_post_terminal_state("unfinished-cross-post")
 
         task = state.get_task("unfinished-cross-post")
         self.assertEqual(task["videos"], ["final.mp4"])
@@ -1423,7 +1424,7 @@ class TestTaskService(unittest.TestCase):
             patch.object(tm.sm, "state", state),
             patch.object(tm.logger, "exception") as log_exception,
         ):
-            recovered = tm.recover_interrupted_cross_posts()
+            recovered = cp.recover_interrupted_cross_posts()
 
         self.assertIsNone(recovered)
         self.assertIn("redis unavailable", log_exception.call_args.args[0])
@@ -1439,17 +1440,17 @@ class TestTaskService(unittest.TestCase):
         )
         slots = MagicMock()
         future = Future()
-        tm._register_cross_post_future("cancelled-cross-post", future)
+        cp._register_cross_post_future("cancelled-cross-post", future)
         self.assertTrue(future.cancel())
 
         with (
             patch.object(tm.sm, "state", state),
-            patch.object(tm, "_cross_post_slots", slots),
+            patch.object(cp, "_cross_post_slots", slots),
         ):
-            tm._finalize_cross_post_future("cancelled-cross-post", future)
+            cp._finalize_cross_post_future("cancelled-cross-post", future)
 
         slots.release.assert_called_once_with()
-        self.assertFalse(tm._is_cross_post_active_in_process("cancelled-cross-post"))
+        self.assertFalse(cp._is_cross_post_active_in_process("cancelled-cross-post"))
         task = state.get_task("cancelled-cross-post")
         self.assertEqual(task["cross_post_state"], tm.const.CROSS_POST_STATE_FAILED)
         self.assertIn("cancelled", task["cross_post_error"])
@@ -1477,7 +1478,7 @@ class TestTaskService(unittest.TestCase):
 
         try:
             with patch.object(tm.sm, "state", state):
-                recovered = tm.recover_interrupted_cross_posts(page_size=10)
+                recovered = cp.recover_interrupted_cross_posts(page_size=10)
 
             self.assertGreaterEqual(recovered, 1)
             task = state.get_task(task_id)
@@ -1485,7 +1486,7 @@ class TestTaskService(unittest.TestCase):
             self.assertEqual(
                 task["cross_post_state"], tm.const.CROSS_POST_STATE_FAILED
             )
-            self.assertEqual(task["cross_post_error"], tm._INTERRUPTED_CROSS_POST_ERROR)
+            self.assertEqual(task["cross_post_error"], cp._INTERRUPTED_CROSS_POST_ERROR)
         finally:
             state.delete_task(task_id)
 
@@ -1495,7 +1496,7 @@ class TestTaskService(unittest.TestCase):
         future.set_exception(RuntimeError("executor worker failed"))
 
         with patch.object(tm.logger, "error") as log_error:
-            tm._finalize_cross_post_future("future-failure", future)
+            cp._finalize_cross_post_future("future-failure", future)
 
         log_error.assert_called_once()
         self.assertIn("executor worker failed", log_error.call_args.args[0])
@@ -1514,13 +1515,13 @@ class TestTaskService(unittest.TestCase):
         with (
             patch.object(tm.sm, "state", state),
             patch.object(
-                tm._cross_post_slots,
+                cp._cross_post_slots,
                 "acquire",
                 return_value=False,
             ),
-            patch.object(tm._cross_post_executor, "submit") as submit,
+            patch.object(cp._cross_post_executor, "submit") as submit,
         ):
-            scheduling_error = tm._schedule_cross_post(
+            scheduling_error = cp._schedule_cross_post(
                 task_id="cross-post-queue-full",
                 video_paths=["final.mp4"],
                 params=VideoParams(video_subject="Coffee"),

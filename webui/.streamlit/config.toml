@@ -6,3 +6,13 @@ toolbarMode = "minimal"
 
 [logger]
 hideWelcomeMessage = true
+
+# 主题：与 webui/styles.css 顶部的 --mpt-* 设计令牌保持一致。
+# primaryColor 采用项目品牌强调红，让 Streamlit 原生控件（按钮、链接、选中态）
+# 与自定义样式形成统一的视觉体系。亮/暗由用户系统设置自动决定（base 不写死）。
+[theme]
+primaryColor = "#d94848"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f5f7"
+textColor = "#31333f"
+font = "sans serif"

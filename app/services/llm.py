@@ -1,17 +1,39 @@
 import json
 import logging
 import re
+import time
 from time import perf_counter
 from typing import List
 
 from loguru import logger
-from openai import AzureOpenAI, OpenAI
-from openai.types.chat import ChatCompletion
 
 from app.config import config
 from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
 
 _max_retries = 5
+
+
+def _retry_backoff_seconds(attempt: int) -> float:
+    """返回第 attempt 次（从 0 起）重试前的指数退避秒数。
+
+    上游 LLM 限流（429）和瞬时网络错误在立即重试时大多仍会失败；加指数退避
+    能显著提升重试成功率。基础秒数与上限均可经 config.app 配置：
+    llm_retry_backoff_base（默认 1.0 秒）、llm_retry_backoff_max（默认 16 秒）。
+    """
+    try:
+        base = float(config.app.get("llm_retry_backoff_base", 1.0))
+    except (TypeError, ValueError):
+        base = 1.0
+    try:
+        upper = float(config.app.get("llm_retry_backoff_max", 16.0))
+    except (TypeError, ValueError):
+        upper = 16.0
+    if base <= 0:
+        return 0.0
+    # 1, 2, 4, 8, 16 ... 受上限约束。
+    delay = min(base * (2 ** attempt), upper)
+    return delay
+
 MIN_SCRIPT_PARAGRAPH_NUMBER = 1
 MAX_SCRIPT_PARAGRAPH_NUMBER = 10
 MAX_SCRIPT_PROMPT_LENGTH = 2000
@@ -24,6 +46,15 @@ _URL_USERINFO_RE = re.compile(
 _SENSITIVE_QUERY_RE = re.compile(
     r"([?&](?:api[_-]?key|access[_-]?token|token|key|secret|password)=)([^&#\s]+)",
     re.IGNORECASE,
+)
+
+# 响应解析辅助函数已下沉到 llm_adapters._common（供各 adapter 复用，避免循环导入）。
+# 这里 re-import 保持 llm 模块继续暴露同名符号，兼容现有调用与测试 patch。
+from app.services.llm_adapters._common import (  # noqa: E402,F401
+    _extract_chat_completion_text,
+    _extract_qwen_generation_text,
+    _get_response_field,
+    _normalize_text_response,
 )
 
 DEFAULT_SCRIPT_SYSTEM_PROMPT = """
@@ -44,29 +75,6 @@ Generate a script for a video, depending on the subject of the video.
 """.strip()
 
 
-def _normalize_text_response(content, llm_provider: str) -> str:
-    # 不同 LLM SDK 在异常或被拦截场景下，可能返回 None、空字符串，
-    # 甚至返回非字符串对象。这里统一做兜底校验，避免后续直接调用
-    # `.replace()` 时抛出 `NoneType` 之类的属性错误。
-    if content is None:
-        raise ValueError(f"[{llm_provider}] returned empty text content")
-
-    if not isinstance(content, str):
-        raise TypeError(
-            f"[{llm_provider}] returned non-text content: {type(content).__name__}"
-        )
-
-    # MiniMax M3、DeepSeek R1 这类 reasoning 模型可能会把内部推理包在
-    # `<think>...</think>` 中返回。视频脚本和关键词只需要最终可朗读文本，
-    # 如果不在服务层统一清理，WebUI、字幕和配音都会把思考过程当正文处理。
-    content = _THINK_BLOCK_RE.sub("", content)
-    content = _UNCLOSED_THINK_BLOCK_RE.sub("", content).strip()
-    if not content:
-        raise ValueError(f"[{llm_provider}] returned empty text content")
-
-    return content.replace("\n", "")
-
-
 def _sanitize_error_message(error: object) -> str:
     """
     清理返回给 WebUI/API 的错误信息，避免自定义 base_url 中的凭据泄露。
@@ -80,61 +88,6 @@ def _sanitize_error_message(error: object) -> str:
     message = _URL_USERINFO_RE.sub(r"\1***:***@", message)
     message = _SENSITIVE_QUERY_RE.sub(r"\1***", message)
     return message
-
-
-def _extract_chat_completion_text(response, llm_provider: str) -> str:
-    # OpenAI 兼容接口在异常场景下，可能返回没有 choices、
-    # 或者 choices/message/content 为空的响应对象。
-    # 这里统一做结构校验，避免出现 `NoneType is not subscriptable`
-    # 这类底层属性访问错误。
-    choices = getattr(response, "choices", None)
-    if not choices:
-        raise ValueError(f"[{llm_provider}] returned empty choices")
-
-    first_choice = choices[0]
-    message = getattr(first_choice, "message", None)
-    if message is None:
-        raise ValueError(f"[{llm_provider}] returned empty message")
-
-    content = getattr(message, "content", None)
-    return _normalize_text_response(content, llm_provider)
-
-
-def _get_response_field(value, key: str):
-    """兼容 dict 和 SDK 响应对象的字段读取。"""
-    if isinstance(value, dict):
-        return value.get(key)
-
-    try:
-        return value[key]
-    except (KeyError, TypeError, AttributeError):
-        return getattr(value, key, None)
-
-
-def _extract_qwen_generation_text(response) -> str:
-    """
-    从 DashScope Generation 响应中提取文本。
-
-    Qwen 使用 `messages` 调用时返回的是 chat 结构：
-    `output.choices[0].message.content`；旧 completion 形态才会返回
-    `output.text`。这里两个路径都兼容，避免 `output.text` 为 None 时
-    继续 `.replace()` 触发不可诊断的 AttributeError。
-    """
-    output = _get_response_field(response, "output")
-    choices = _get_response_field(output, "choices") if output else None
-    if choices is not None:
-        if not choices:
-            logger.warning("Qwen returned an empty choices list")
-            raise ValueError("[qwen] returned empty choices")
-
-        first_choice = choices[0]
-        message = _get_response_field(first_choice, "message")
-        content = _get_response_field(message, "content") if message else None
-        if content is not None:
-            return _normalize_text_response(content, "qwen")
-
-    text = _get_response_field(output, "text") if output else None
-    return _normalize_text_response(text, "qwen")
 
 
 def _generate_response(prompt: str) -> str:
@@ -207,193 +160,22 @@ def _generate_response(prompt: str) -> str:
                     "please set it in the config.toml file."
                 )
 
-        if adapter == "qwen":
-            import dashscope
-            from dashscope.api_entities.dashscope_response import GenerationResponse
+        # 各 provider 的「构造 client → 调用 → 解析」差异已下沉到 llm_adapters
+        # 注册表；这里只负责把已解析的参数打包成 LLMCallContext 并查表分发。
+        # 新增协议不同的 provider 时，只需在 app/services/llm_adapters/ 加一个
+        # adapter 模块并 @register_adapter 注册，不再修改本函数。
+        from app.services.llm_adapters import LLMCallContext, get_adapter
 
-            dashscope.api_key = api_key
-            response = dashscope.Generation.call(
-                model=model_name, messages=[{"role": "user", "content": prompt}]
-            )
-            if response:
-                if isinstance(response, GenerationResponse):
-                    status_code = response.status_code
-                    if status_code != 200:
-                        raise Exception(
-                            f'[{llm_provider}] returned an error response: "{response}"'
-                        )
-
-                    return _extract_qwen_generation_text(response)
-                else:
-                    raise Exception(
-                        f'[{llm_provider}] returned an invalid response: "{response}"'
-                    )
-            else:
-                raise Exception(f"[{llm_provider}] returned an empty response")
-
-        if adapter == "gemini":
-            from google import genai
-            from google.genai import types
-
-            http_options = types.HttpOptions(base_url=base_url) if base_url else None
-            generation_config = types.GenerateContentConfig(
-                temperature=0.5,
-                top_p=1,
-                top_k=1,
-                max_output_tokens=2048,
-                safety_settings=[
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_ONLY_HIGH",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_ONLY_HIGH",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_ONLY_HIGH",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_ONLY_HIGH",
-                    ),
-                ],
-            )
-
-            try:
-                # 新版 google-genai 通过统一 Client 暴露模型服务。上下文管理器
-                # 会在请求结束后关闭底层 HTTP 连接，避免频繁生成时积累连接资源。
-                with genai.Client(
-                    api_key=api_key,
-                    http_options=http_options,
-                ) as client:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=generation_config,
-                    )
-                generated_text = response.text
-            except (AttributeError, IndexError, ValueError) as e:
-                logger.warning(f"gemini returned invalid response content: {str(e)}")
-                raise ValueError(f"[{llm_provider}] returned invalid response content")
-
-            return _normalize_text_response(generated_text, llm_provider)
-
-        if adapter == "cloudflare_ai_gateway":
-            account_id = extra_values["account_id"]
-            gateway_id = extra_values["gateway_id"]
-            # Cloudflare 当前推荐的 AI Gateway REST API 兼容 OpenAI SDK。
-            # Account ID 用于构造统一端点，Gateway ID 通过请求头选择；这里
-            # 不再调用 Workers AI 的 /ai/run/{model} 专用接口。
-            client = OpenAI(
-                api_key=api_key,
-                base_url=(
-                    f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
-                ),
-                default_headers={"cf-aig-gateway-id": gateway_id},
-            )
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return _extract_chat_completion_text(response, llm_provider)
-
-        if adapter == "litellm":
-            import litellm
-
-            if not model_name:
-                raise ValueError(
-                    f"{llm_provider}: model_name is not set, please set it in the config.toml file."
-                )
-
-            response = litellm.completion(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                drop_params=True,
-            )
-
-            if not response:
-                raise ValueError(f"[{llm_provider}] returned empty response")
-            if not getattr(response, "choices", None):
-                raise ValueError(f"[{llm_provider}] returned empty response")
-
-            return _extract_chat_completion_text(response, llm_provider)
-
-        if adapter == "azure":
-            # Azure OpenAI SDK 使用 `azure_endpoint` 和 `api_version` 生成专用请求地址，
-            # 不能继续复用下面普通 OpenAI-compatible 的 `base_url` 初始化逻辑。
-            # 这里在 Azure 分支内完成请求并立即返回，避免客户端被后续 fallback
-            # 覆盖，导致用户配置的 Azure 凭证通过校验但实际请求没有被使用。
-            logger.info(f"requesting azure chat completion, model: {model_name}")
-            client = AzureOpenAI(
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=base_url,
-            )
-            response = client.chat.completions.create(
-                model=model_name, messages=[{"role": "user", "content": prompt}]
-            )
-            if response:
-                if isinstance(response, ChatCompletion):
-                    return _extract_chat_completion_text(response, llm_provider)
-                else:
-                    raise Exception(
-                        f'[{llm_provider}] returned an invalid response: "{response}", please check your network '
-                        f"connection and try again."
-                    )
-            else:
-                raise Exception(
-                    f"[{llm_provider}] returned an empty response, please check your network connection and try again."
-                )
-
-        if adapter == "modelscope":
-            content = ""
-            client = OpenAI(
-                api_key=api_key,
-                base_url=base_url,
-            )
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                extra_body={"enable_thinking": False},
-                stream=True,
-            )
-            if response:
-                for chunk in response:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta and delta.content:
-                        content += delta.content
-
-                if not content.strip():
-                    raise ValueError("Empty content in stream response")
-
-                return _normalize_text_response(content, llm_provider)
-            else:
-                raise Exception(f"[{llm_provider}] returned an empty response")
-
-        client = OpenAI(
+        ctx = LLMCallContext(
+            provider_id=llm_provider,
+            prompt=prompt,
             api_key=api_key,
+            model_name=model_name,
             base_url=base_url,
+            api_version=api_version,
+            extra_values=extra_values,
         )
-
-        response = client.chat.completions.create(
-            model=model_name, messages=[{"role": "user", "content": prompt}]
-        )
-        if response:
-            if isinstance(response, ChatCompletion):
-                return _extract_chat_completion_text(response, llm_provider)
-            else:
-                raise Exception(
-                    f'[{llm_provider}] returned an invalid response: "{response}", please check your network '
-                    f"connection and try again."
-                )
-        else:
-            raise Exception(
-                f"[{llm_provider}] returned an empty response, please check your network connection and try again."
-            )
+        return get_adapter(adapter)(ctx)
 
     except Exception as e:
         return f"Error: {_sanitize_error_message(e)}"
@@ -557,8 +339,13 @@ def generate_script(
         except Exception as e:
             logger.error(f"failed to generate script: {e}")
 
-        if i < _max_retries:
-            logger.warning(f"failed to generate video script, trying again... {i + 1}")
+        if i < _max_retries - 1:
+            backoff = _retry_backoff_seconds(i)
+            logger.warning(
+                f"failed to generate video script, trying again... {i + 1} (after {backoff:.1f}s)"
+            )
+            if backoff > 0:
+                time.sleep(backoff)
     if "Error: " in final_script:
         logger.error(f"failed to generate video script: {final_script}")
     else:
@@ -679,8 +466,13 @@ Please note that you must use English for generating video search terms; Chinese
 
         if search_terms and len(search_terms) > 0:
             break
-        if i < _max_retries:
-            logger.warning(f"failed to generate video terms, trying again... {i + 1}")
+        if i < _max_retries - 1:
+            backoff = _retry_backoff_seconds(i)
+            logger.warning(
+                f"failed to generate video terms, trying again... {i + 1} (after {backoff:.1f}s)"
+            )
+            if backoff > 0:
+                time.sleep(backoff)
 
     logger.success(f"completed: \n{search_terms}")
     return search_terms
@@ -940,9 +732,12 @@ def generate_social_metadata(
             logger.warning(f"failed to parse social metadata: {str(e)}")
 
         if i < _max_retries - 1:
+            backoff = _retry_backoff_seconds(i)
             logger.warning(
-                f"failed to generate social metadata, trying again... {i + 1}"
+                f"failed to generate social metadata, trying again... {i + 1} (after {backoff:.1f}s)"
             )
+            if backoff > 0:
+                time.sleep(backoff)
 
     logger.warning("falling back to heuristic social metadata")
     return _fallback_social_metadata(video_subject, video_script, platform)

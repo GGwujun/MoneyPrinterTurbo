@@ -238,6 +238,12 @@ endpoint = ""
 # Example: material_directory = "/path/to/videos"
 material_directory = ""
 
+# Number of concurrent downloads when fetching stock materials (1-8). Download
+# is I/O-bound and stock CDNs generally allow parallel requests, so raising this
+# shortens the material-preparation stage. The search step stays sequential to
+# avoid hitting per-key rate limits on Pexels/Pixabay.
+material_download_workers = 4
+
 # Optional Redis-backed task state. Keep Redis private to this application;
 # untrusted writers must not be able to modify serialized task records.
 enable_redis = false

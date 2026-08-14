@@ -683,7 +683,16 @@ def _render_task_table(filtered_tasks, key_prefix):
         st.info(tr("No Tasks Match Filter"))
         return
 
-    visible_tasks = filtered_tasks[:12]
+    # 分页：每个状态 tab 独立维护"已显示条数"，避免一次性渲染全部历史任务
+    # 造成 popover 卡顿。任务总数少于已显示数时（如删除/筛选后）自动收缩，
+    # 避免留出大段空白。
+    page_state_key = f"task_page_count_{key_prefix}"
+    page_size = 12
+    visible_count = st.session_state.get(page_state_key, page_size)
+    visible_count = min(visible_count, len(filtered_tasks))
+    st.session_state[page_state_key] = visible_count
+
+    visible_tasks = filtered_tasks[:visible_count]
     list_height = min(390, max(96, len(visible_tasks) * 58))
     with st.container(height=list_height, border=False):
         for task in visible_tasks:
@@ -771,6 +780,20 @@ def _render_task_table(filtered_tasks, key_prefix):
                             st.rerun()
                         else:
                             st.error(tr("Task Delete Failed"))
+
+    remaining = len(filtered_tasks) - len(visible_tasks)
+    if remaining > 0:
+        # 底部"加载更多"：每次追加一页，并提示剩余数量。按钮放在滚动列表之外，
+        # 避免随列表高度变化跳动；点击后 rerun 重新渲染更多行。
+        st.caption(tr("Load More Tasks").format(visible=len(visible_tasks), total=len(filtered_tasks)))
+        if st.button(
+            tr("Load More"),
+            key=f"load_more_{key_prefix}",
+            use_container_width=True,
+            icon=":material/expand_more:",
+        ):
+            st.session_state[page_state_key] = visible_count + page_size
+            st.rerun()
 
 
 def _render_task_manager_panel(tasks=None):
@@ -1051,7 +1074,7 @@ def _dismiss_blogger_dialog():
 
 
 @st.dialog(
-    tr("博主蒸馏"),
+    tr("Blogger Distill"),
     width="medium",
     on_dismiss=_dismiss_blogger_dialog,
 )
@@ -1062,101 +1085,103 @@ def _render_blogger_distill_dialog():
     (复用当前 LLM Provider)。整个过程同步阻塞 (约数分钟), 用 st.status 展示进度。
     """
     st.caption(
-        tr("输入博主昵称，自动采集 TA 的笔记并蒸馏出创作公式；之后生成视频时可套用该风格。")
+        tr("Blogger Distill Intro")
     )
 
     tikhub_key = str(config.tikhub.get("tikhub_api_key", "") or "").strip()
     if not tikhub_key:
         st.warning(
-            tr("尚未配置 TikHub API Token，请在「设置 → 素材接口」里填写后再蒸馏。")
+            tr("TikHub Token Missing")
         )
-        if st.button(tr("关闭"), key="close_blogger_no_token", use_container_width=True):
+        if st.button(tr("Close"), key="close_blogger_no_token", use_container_width=True):
             st.session_state["blogger_dialog_open"] = False
             st.rerun(scope="app")
         return
 
     nickname = st.text_input(
-        tr("博主昵称 / 关键词"),
+        tr("Blogger Nickname or Keyword"),
         key="blogger_distill_nickname",
-        placeholder=tr("例如：影视飓风"),
+        placeholder=tr("Blogger Nickname Placeholder"),
     ).strip()
     platform = st.selectbox(
-        tr("平台"),
+        tr("Platform"),
         options=["xhs", "douyin"],
-        format_func=lambda p: {"xhs": tr("小红书"), "douyin": tr("抖音")}[p],
+        format_func=lambda p: {"xhs": tr("Xiaohongshu"), "douyin": tr("Douyin")}[p],
         key="blogger_distill_platform",
     )
     max_notes = st.select_slider(
-        tr("采集条数"),
+        tr("Collect Count"),
         options=[30, 50, 80],
         value=30,
         key="blogger_distill_max_notes",
     )
     transcript = st.checkbox(
-        tr("提取视频口播（Whisper，需另装，更准但更慢）"),
+        tr("Extract Voiceover Whisper"),
         value=False,
         key="blogger_distill_transcript",
-        help=tr("开启后额外提取视频里说了什么，正文公式/情感节奏蒸馏更准；需 pip install openai-whisper + ffmpeg。未安装会自动跳过。"),
+        help=tr("Extract Voiceover Whisper Help"),
     )
 
     if st.button(
-        tr("开始蒸馏"),
+        tr("Start Distill"),
         type="primary",
         key="start_blogger_distill",
         use_container_width=True,
         disabled=not nickname,
     ):
         try:
-            with st.status(tr("蒸馏中…"), expanded=True) as status:
-                st.write(tr("① 采集博主笔记（TikHub）…"))
+            with st.status(tr("Distilling"), expanded=True) as status:
+                st.write(tr("Distill Step Collect"))
                 profile = blogger_service.run_distillation(
                     nickname=nickname,
                     platform=platform,
                     max_notes=max_notes,
                     transcript=transcript,
                 )
-                status.update(label=tr("蒸馏完成"), state="complete")
+                status.update(label=tr("Distill Complete"), state="complete")
             style = profile.get("style") or {}
             meta = style.get("meta") or {}
             st.success(
-                tr(f"已保存博主「{meta.get('nickname', nickname)}」的创作公式")
+                tr("Saved Blogger Style").format(name=meta.get('nickname', nickname))
             )
             tf_count = len((style.get("content") or {}).get("title_formulas") or [])
             belief_count = len((style.get("cognition") or {}).get("core_beliefs") or [])
             st.caption(
-                tr(
-                    f"样本 {meta.get('sample_count')} 条 | 核心信念 {belief_count} 条 | "
-                    f"标题公式 {tf_count} 个。可在「视频脚本」面板的「博主风格」下拉里选用。"
+                tr("Distill Summary").format(
+                    samples=meta.get('sample_count'),
+                    beliefs=belief_count,
+                    formulas=tf_count,
                 )
             )
         except Exception as e:
             logger.exception("blogger distillation failed")
-            st.error(tr(f"蒸馏失败：{e}"))
+            st.error(tr("Distill Failed").format(error=e))
 
     # 已蒸馏档案列表 + 删除
     st.divider()
-    st.subheader(tr("已蒸馏的博主"))
+    st.subheader(tr("Distilled Bloggers"))
     profiles = blogger_service.profiles.list_profiles()
     if not profiles:
-        st.caption(tr("还没有蒸馏过的博主。"))
+        st.caption(tr("No Distilled Bloggers"))
         return
     for p in profiles:
         with st.container(border=True):
             cols = st.columns([4, 1])
-            platform_label = {"xhs": tr("小红书"), "douyin": tr("抖音")}.get(
+            platform_label = {"xhs": tr("Xiaohongshu"), "douyin": tr("Douyin")}.get(
                 p.get("platform"), p.get("platform")
             )
             cols[0].write(
                 f"**{p.get('nickname')}** · {platform_label} · "
-                f"{tr('样本')} {p.get('sample_count')} · "
-                f"{tr('标题公式')} {p.get('title_formula_count')}"
+                f"{tr('Samples')} {p.get('sample_count')} · "
+                f"{tr('Title Formulas')} {p.get('title_formula_count')}"
             )
             if p.get("title_formula_preview"):
                 cols[0].caption(p["title_formula_preview"])
             if cols[1].button(
-                tr("删除"),
+                tr("Delete"),
                 key=f"delete_blogger_{p.get('id')}",
                 use_container_width=True,
+                icon=":material/delete:",
             ):
                 blogger_service.profiles.delete_profile(p.get("id"))
                 st.rerun(scope="app")
@@ -1247,7 +1272,7 @@ def _render_top_bar():
                 st.session_state["settings_dialog_open"] = True
 
             if st.button(
-                tr("博主蒸馏"),
+                tr("Blogger Distill"),
                 key="open_blogger_dialog_button",
                 type="secondary",
                 icon=":material/auto_awesome:",
@@ -1262,7 +1287,7 @@ def _render_top_bar():
                     selected_index = i
 
             selected_language_code = st.selectbox(
-                "Language / 语言",
+                tr("Language"),
                 options=language_codes,
                 index=selected_index,
                 format_func=lambda code: locales[code].get("Language", code),
@@ -2181,7 +2206,7 @@ def _render_settings_dialog():
             # 博主蒸馏 (Blogger Distillation) — TikHub 配置
             st.divider()
             st.caption(
-                tr("博主蒸馏 — TikHub API（采集小红书/抖音博主笔记，蒸馏创作公式）")
+                tr("Blogger Distill TikHub Section")
             )
             tikhub_api_key = config.tikhub.get("tikhub_api_key", "")
             tikhub_api_key = st.text_input(
@@ -2190,17 +2215,17 @@ def _render_settings_dialog():
                 type="password",
                 key="tikhub_api_key_input",
                 help=tr(
-                    "注册地址 https://user.tikhub.io；充值后在控制台 → API 权限里勾选全部 xiaohongshu / douyin 端点。"
+                    "TikHub Register Help"
                 ),
             )
             config.tikhub["tikhub_api_key"] = tikhub_api_key.strip()
             tikhub_default_platform = st.selectbox(
-                tr("默认采集平台"),
+                tr("Default Collect Platform"),
                 options=["xhs", "douyin"],
                 index=0
                 if config.tikhub.get("tikhub_default_platform", "xhs") == "xhs"
                 else 1,
-                format_func=lambda p: {"xhs": tr("小红书"), "douyin": tr("抖音")}[p],
+                format_func=lambda p: {"xhs": tr("Xiaohongshu"), "douyin": tr("Douyin")}[p],
                 key="tikhub_default_platform_select",
             )
             config.tikhub["tikhub_default_platform"] = tikhub_default_platform
@@ -2255,7 +2280,7 @@ def _render_script_settings(panel, params):
                     # 博主风格: 选用已蒸馏的创作公式, 注入到脚本生成阶段
                     blogger_profiles = blogger_service.profiles.list_profiles()
                     if blogger_profiles:
-                        _platform_label = {"xhs": tr("小红书"), "douyin": tr("抖音")}
+                        _platform_label = {"xhs": tr("Xiaohongshu"), "douyin": tr("Douyin")}
                         blogger_labels = {
                             p["id"]: f"{p.get('nickname')} · {_platform_label.get(p.get('platform'), p.get('platform'))}"
                             for p in blogger_profiles
@@ -2263,16 +2288,16 @@ def _render_script_settings(panel, params):
 
                         def _blogger_style_label(value):
                             if not value:
-                                return tr("不套用博主风格")
+                                return tr("No Blogger Style")
                             return blogger_labels.get(value, value)
 
                         blogger_options = [""] + [p["id"] for p in blogger_profiles]
                         selected_style = st.selectbox(
-                            tr("博主风格"),
+                            tr("Blogger Style"),
                             options=blogger_options,
                             format_func=_blogger_style_label,
                             key="blogger_style_id_select",
-                            help=tr("选用后，生成的视频脚本会复刻该博主的内容风格（先在「博主蒸馏」里蒸馏一个博主）"),
+                            help=tr("Blogger Style Help"),
                         )
                         params.blogger_style_id = selected_style or ""
                         if selected_style:
@@ -2282,12 +2307,12 @@ def _render_script_settings(panel, params):
                             )
                             if sel and sel.get("title_formula_preview"):
                                 st.caption(
-                                    tr("标题公式参考：") + sel["title_formula_preview"]
+                                    tr("Title Formula Reference") + sel["title_formula_preview"]
                                 )
                     else:
                         params.blogger_style_id = ""
                         st.caption(
-                            tr("没有可选的博主风格，点击顶栏「博主蒸馏」蒸馏一个博主。")
+                            tr("No Blogger Style Hint")
                         )
 
                     params.video_script_prompt = st.text_area(
@@ -3178,6 +3203,7 @@ def _render_background_music_settings(params, elevenlabs_api_key_rendered=False)
             tr("Test Sonilo Connection"),
             key="test_sonilo_connection_button",
             use_container_width=True,
+            icon=":material/network_check:",
         ):
             try:
                 sonilo_service.test_connection()
@@ -3199,6 +3225,7 @@ def _render_background_music_settings(params, elevenlabs_api_key_rendered=False)
             tr("Test ElevenLabs Connection"),
             key="test_elevenlabs_music_connection_button",
             use_container_width=True,
+            icon=":material/network_check:",
         ):
             try:
                 elevenlabs_music_service.test_connection()
@@ -3555,6 +3582,9 @@ def _render_audio_settings(panel, params):
                     chatterbox_voices
                 )
 
+            # 凭证配置到此结束，以下为播放控制（音量 / 语速 / 试听）与背景音乐。
+            st.divider()
+
             # 三种模式只渲染当前任务真正需要的控件。自动配音可调音量和语速；
             # 上传音频只需要文件和音量；无配音不再展示无效设置。
             params.voice_name = (
@@ -3705,6 +3735,9 @@ def _render_subtitle_settings(panel, params):
                 except ValueError:
                     st.error(tr("Please enter a valid number"))
 
+            # 字体与位置到此结束，以下为文字外观（颜色 / 字号 / 描边）与背景设置。
+            st.divider()
+
             # 非中文语言的颜色标签通常比中文更长。为颜色选择器保留适当宽度，
             # 避免标签换行，同时仍给字号滑块保留足够的可操作空间。
             font_cols = st.columns([0.42, 0.58])
@@ -3755,6 +3788,8 @@ def _render_subtitle_settings(panel, params):
                     key="stroke_width_slider",
                     disabled=subtitle_settings_disabled,
                 )
+
+            st.divider()
 
             # 背景开关的本地化名称普遍比颜色标签更长，因此让开关占据略多空间。
             subtitle_bg_cols = st.columns([0.55, 0.45])
@@ -4116,32 +4151,41 @@ def _render_application():
     # ---- 平台导航 ----
     # 用 segmented_control 做顶部导航。博主库/选题/发布台三个视图「渲染后早返回」,
     # 视频生成页的既有逻辑 (3900+ 行) 完全不动, 避免高风险的大范围重排缩进。
-    _platform_nav_options = ["视频生成", "博主库", "选题策划", "发布台"]
+    # 导航的内部值使用稳定的英文 key（不随语言变化），显示文字经 format_func 本地化，
+    # 这样 session_state["platform_view"] 与 blogger_pages 里的跨页切换不会因语言而断链。
+    _platform_nav_keys = ["video_gen", "blogger_library", "topic_planning", "publish_desk"]
+    _platform_nav_labels = {
+        "video_gen": tr("Video Generation"),
+        "blogger_library": tr("Blogger Library"),
+        "topic_planning": tr("Topic Planning"),
+        "publish_desk": tr("Publish Desk"),
+    }
     platform_view = (
         st.segmented_control(
-            tr("平台导航"),
-            _platform_nav_options,
+            tr("Platform Navigation"),
+            _platform_nav_keys,
             selection_mode="single",
-            default="视频生成",
+            default="video_gen",
+            format_func=lambda k: _platform_nav_labels.get(k, k),
             key="platform_view",
             label_visibility="collapsed",
         )
-        or "视频生成"
+        or "video_gen"
     )
 
-    if platform_view == "博主库":
+    if platform_view == "blogger_library":
         from blogger_pages import render_blogger_library_tab
 
         render_blogger_library_tab(tr)
         config.save_config()
         return
-    if platform_view == "选题策划":
+    if platform_view == "topic_planning":
         from blogger_pages import render_topic_planner_tab
 
         render_topic_planner_tab(tr)
         config.save_config()
         return
-    if platform_view == "发布台":
+    if platform_view == "publish_desk":
         from blogger_pages import render_publish_console_tab
 
         render_publish_console_tab(tr)

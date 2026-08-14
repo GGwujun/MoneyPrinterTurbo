@@ -464,7 +464,7 @@ class TestLiteLLMProvider(unittest.TestCase):
         """移除 ERNIE 后，遗留配置应返回明确错误，不再发起旧 OAuth 请求。"""
         config.app["llm_provider"] = "ernie"
 
-        with patch.object(llm, "OpenAI") as openai_client:
+        with patch("app.services.llm_adapters.openai_compatible.OpenAI") as openai_client:
             result = llm._generate_response("test")
 
         openai_client.assert_not_called()
@@ -481,7 +481,7 @@ class TestLiteLLMProvider(unittest.TestCase):
             }
         )
 
-        with patch.object(llm, "OpenAI") as openai_client:
+        with patch("app.services.llm_adapters.openai_compatible.OpenAI") as openai_client:
             result = llm._generate_response("test")
 
         openai_client.assert_not_called()
@@ -511,8 +511,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -581,7 +581,7 @@ class TestLiteLLMProvider(unittest.TestCase):
             }
         )
 
-        with patch.object(llm, "OpenAI") as openai_client:
+        with patch("app.services.llm_adapters.cloudflare.OpenAI") as openai_client:
             result = llm._generate_response("test")
 
         openai_client.assert_not_called()
@@ -618,8 +618,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.cloudflare.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.cloudflare.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -766,7 +766,7 @@ class TestLiteLLMProvider(unittest.TestCase):
             chat=types.SimpleNamespace(completions=FakeCompletions())
         )
 
-        with patch.object(llm, "OpenAI", return_value=fake_client):
+        with patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client):
             result = llm._generate_response("test")
 
         self.assertIn("Error:", result)
@@ -895,8 +895,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -932,8 +932,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -974,8 +974,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -1016,8 +1016,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -1078,8 +1078,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -1109,8 +1109,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -1198,8 +1198,8 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "OpenAI", return_value=fake_client) as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.openai_compatible.OpenAI", return_value=fake_client) as openai_client,
+            patch("app.services.llm_adapters.openai_compatible.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 
@@ -1241,9 +1241,9 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
 
         with (
-            patch.object(llm, "AzureOpenAI", return_value=fake_client) as azure_client,
-            patch.object(llm, "OpenAI") as openai_client,
-            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+            patch("app.services.llm_adapters.azure.AzureOpenAI", return_value=fake_client) as azure_client,
+            patch("app.services.llm_adapters.openai_compatible.OpenAI") as openai_client,
+            patch("app.services.llm_adapters.azure.ChatCompletion", types.SimpleNamespace),
         ):
             result = llm._generate_response("Say hello")
 

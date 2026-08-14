@@ -148,6 +148,9 @@ class TestMaterialTlsVerification(unittest.TestCase):
         开启按文案顺序匹配素材后，不能让第一个关键词的多个候选先把
         音频时长填满。这里模拟两个关键词各有多个候选，验证下载顺序是
         term1-第1个、term2-第1个、term1-第2个，贴近脚本叙事顺序。
+
+        script-order 模式对顺序和"凑够即停"语义敏感，保持逐个串行下载
+        （普通模式才并发），因此 save_video 的调用顺序是确定的。
         """
         search_results = {
             "opening city": [
@@ -191,6 +194,93 @@ class TestMaterialTlsVerification(unittest.TestCase):
             ],
         )
         self.assertEqual(result, ["/tmp/a1.mp4", "/tmp/b1.mp4", "/tmp/a2.mp4"])
+
+
+class TestMaterialParallelDownload(unittest.TestCase):
+    """普通（非 script-order）模式下载已改为并发批量。这里验证三条不变量：
+    1) 多个候选会被下载（并发生效）；
+    2) 达到音频时长预算后停止，不会下载全部候选；
+    3) 结果列表顺序与提交顺序一致（不随完成先后变化）。
+    """
+
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    def test_parallel_download_stops_at_audio_budget(self):
+        # 12 个候选，每个 3 秒；audio_duration=7 → 第一批（batch_size 个）下完
+        # 即 total=12>7 达预算，停止提交后续批次。验证不会下载全部 12 个。
+        items = [
+            material.MaterialInfo(provider="pexels", url=f"https://v.example/c{i}.mp4", duration=3)
+            for i in range(12)
+        ]
+        downloaded_urls = []
+
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return items
+
+        def fake_save_video(video_url, save_dir=""):
+            downloaded_urls.append(video_url)
+            return f"/tmp/{video_url.rsplit('/', 1)[-1]}"
+
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=fake_search),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+        ):
+            result = material.download_videos(
+                task_id="parallel-materials",
+                search_terms=["solo term"],
+                source="pexels",
+                audio_duration=7,
+                max_clip_duration=3,
+                # 用 sequential 模式避免 random.shuffle 干扰顺序断言
+                video_concat_mode="sequential",
+            )
+
+        # 第一批就达预算：下载量 = batch_size（默认 4），明显少于全部 12 个。
+        self.assertGreaterEqual(len(result), 3)
+        self.assertLess(len(downloaded_urls), 12)
+        # 结果顺序与候选顺序一致（c0, c1, ...），并发不破坏顺序。
+        self.assertEqual(
+            [p.rsplit("/", 1)[-1] for p in result],
+            [f"c{i}.mp4" for i in range(len(result))],
+        )
+
+    def test_parallel_download_completes_when_budget_exceeds_candidates(self):
+        """候选不足以覆盖预算时，应下载全部候选而不丢失任何一个。"""
+        items = [
+            material.MaterialInfo(provider="pexels", url=f"https://v.example/d{i}.mp4", duration=3)
+            for i in range(3)
+        ]
+
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return items
+
+        def fake_save_video(video_url, save_dir=""):
+            return f"/tmp/{video_url.rsplit('/', 1)[-1]}"
+
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=fake_search),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+        ):
+            result = material.download_videos(
+                task_id="parallel-all",
+                search_terms=["solo term"],
+                source="pexels",
+                audio_duration=999,  # 远超候选总时长
+                max_clip_duration=3,
+                video_concat_mode="sequential",
+            )
+
+        self.assertEqual(
+            [p.rsplit("/", 1)[-1] for p in result],
+            ["d0.mp4", "d1.mp4", "d2.mp4"],
+        )
 
 
 class TestCoverrProvider(unittest.TestCase):

@@ -152,7 +152,8 @@ def test_worker_logs_are_available_without_streamlit_session_state():
     assert len(records) == 1
     assert re.fullmatch(
         r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| INFO \| "
-        r'"\./test/services/test_webui_task\.py:\d+": logged_start '
+        # loguru 在 Windows 上用反斜杠渲染 caller path，兼容两种分隔符。
+        r'"\./test[/\\]services[/\\]test_webui_task\.py:\d+": logged_start '
         r"- unique background task log",
         records[0],
     )

@@ -245,6 +245,35 @@ def load_config():
     return _config_
 
 
+# app 段中应当为数值（int/float）的配置项。TOML 解析通常已给出正确类型，
+# 但用户手改 config.toml 或经由 WebUI 写入时可能写成字符串（如 "30"），导致
+# 后续 float()/int() 转换散落各处且行为不一致。规整逻辑见 _coerce_config_types。
+
+
+def _coerce_numeric(value, default, as_int: bool):
+    """把配置值规整为数值；无法转换时回退默认值。"""
+    try:
+        if isinstance(value, bool):
+            # bool 是 int 子类，但几乎不可能是合法数值配置；交给默认。
+            raise ValueError("bool is not a numeric config value")
+        result = float(value)
+        if as_int:
+            result = int(result)
+        return result
+    except (TypeError, ValueError):
+        logger.warning(
+            f"config value {value!r} is not a valid number, falling back to {default!r}"
+        )
+        return default
+
+
+def _coerce_config_types(cfg_section, spec):
+    """按 spec（{key: (default, as_int)}）就地规整配置段的数值字段。"""
+    for key, (default, as_int) in spec.items():
+        if key in cfg_section:
+            cfg_section[key] = _coerce_numeric(cfg_section[key], default, as_int)
+
+
 def save_config():
     """
     原子保存运行时配置。
@@ -299,6 +328,16 @@ def save_config():
 
 _cfg = load_config()
 app = _SynchronizedConfig(_cfg.get("app", {}))
+# 规整易写错的数值字段：类型不合法时回退默认并告警，而不是在运行时远端调用处崩溃。
+_coerce_config_types(
+    app,
+    {
+        "edge_tts_timeout": (30, False),
+        "material_download_workers": (4, True),
+        "llm_retry_backoff_base": (1.0, False),
+        "llm_retry_backoff_max": (16.0, False),
+    },
+)
 whisper = _cfg.get("whisper", {})
 proxy = _cfg.get("proxy", {})
 azure = _SynchronizedConfig(_cfg.get("azure", {}))
